@@ -1,0 +1,2051 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Ninja Loot Shooter</title>
+  <style>
+    body {
+      margin:0;
+      background:#0e0f12;
+      color:white;
+      text-align:center;
+      font-family:Arial;
+    }
+    canvas {
+      display:block;
+      margin:auto;
+      background:#1a1d22;
+      border:2px solid white;
+      cursor:none;
+    }
+    #stats {
+      max-width:600px;
+      margin:8px auto 0;
+      display:flex;
+      justify-content:space-between;
+      font-family:Arial, sans-serif;
+      font-size:14px;
+      color:#ddd;
+      flex-wrap:wrap;
+      gap:6px;
+    }
+    #stats .best { color:#ffd24a; }
+    #stats .gold { color:#ffd24a; }
+    #stats span b { color:#fff; }
+  </style>
+</head>
+
+<body>
+
+<h2>🥷 Ninja Loot Shooter</h2>
+<p style="margin:4px 0 8px;font-size:13px;color:#aaa;">
+  Move: <b>WASD</b> or <b>Arrow Keys</b> &nbsp;·&nbsp; Aim/Shoot: <b>Mouse</b>
+  &nbsp;·&nbsp; <em>Click the game once to focus.</em>
+</p>
+<canvas id="game" width="600" height="450" tabindex="0"></canvas>
+<div id="stats">
+  <span>Level: <b id="lvl">1</b></span>
+  <span>Score: <b id="score">0</b></span>
+  <span>HP: <b id="hp">5</b></span>
+  <span>Ammo: <b id="ammo">0</b></span>
+  <span class="gold">Gun: <b id="gun">pistol</b></span>
+  <span class="best">Best Level: <b id="bestLvl">1</b></span>
+  <span class="best">High Score: <b id="bestScore">0</b></span>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// 🌍 WORLDS
+const dojo  = {width:1600, height:1200};         // combat arena
+const lobby = {width:800,  height:600};          // safe hub
+
+// 🎥 CAMERA
+let cam = {x:0,y:0};
+
+// 📈 STATE
+let scene = "lobby";        // "lobby" | "playing" | "gameover"
+let level = 1;
+let score = 0;
+let savedNewRecord = false;
+
+// 🏆 PERSISTENT BESTS (localStorage)
+const STORAGE_KEY = "lootShooterBests_v1";
+function loadBests() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { bestLevel: 1, bestScore: 0 };
+    const v = JSON.parse(raw);
+    return {
+      bestLevel: Number.isFinite(v.bestLevel) ? v.bestLevel : 1,
+      bestScore: Number.isFinite(v.bestScore) ? v.bestScore : 0
+    };
+  } catch (e) {
+    return { bestLevel: 1, bestScore: 0 };
+  }
+}
+function saveBests() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(bests)); }
+  catch (e) { /* ignore */ }
+}
+let bests = loadBests();
+
+// 🥷 PLAYER
+let player;
+
+// 🔫 OBJECTS
+let bullets    = [];
+let enemies    = [];
+let crates     = [];        // ammo+gun reroll crates (regular)
+let goldChests = [];        // rare upgrades
+let ammoBoxes  = [];
+let healthPacks = [];       // heal pickups
+let pickups    = [];        // floating text feedback ("+1 DMG", etc.)
+let explosions = [];        // visual blast effects
+let buildings  = [];        // dojo huts (have walls + door + loot inside)
+let walls      = [];        // flattened wall rects, used for collision
+let bushes     = [];        // decorative greenery
+let enemyBullets = [];      // bullets fired by the bot
+let airdrops   = [];        // crates falling from the sky with mythic loot
+
+// 🎚️ Difficulty curve: level 1 = trivial, level 100 = brutal
+function levelStats(lv){
+  const t = Math.min(1, Math.max(0, (lv - 1) / 99));
+  return {
+    hp:           Math.round(30 + t * 3970),  // 30 → 4000
+    speed:        0.5 + t * 4.0,              // 0.5 → 4.5
+    cooldownMult: 2.5 - t * 2.2,              // 2.5x → 0.3x base gun cooldown
+    dmgMult:      0.25 + t * 1.55,            // 0.25x → 1.8x base gun damage
+    spread:       0.55 - t * 0.53,            // 0.55 rad → 0.02 rad random aim wobble
+    maxTier:      Math.max(1, Math.min(6, 1 + Math.floor((lv - 1) / 12))) // gun tier cap
+  };
+}
+
+// 🌈 RARITY system — colors and weighted drop chances
+const RARITY = {
+  common:    { label:"Common",    color:"#bdbdbd", weight:55 },
+  uncommon:  { label:"Uncommon",  color:"#5dd16f", weight:25 },
+  rare:      { label:"Rare",      color:"#4aa3ff", weight:13 },
+  legendary: { label:"Legendary", color:"#c66bff", weight:5  },
+  mythic:    { label:"Mythic",    color:"#ff4d4d", weight:2  }
+};
+const RARITY_ORDER = ["common","uncommon","rare","legendary","mythic"];
+
+// 🔫 GUN CATALOG
+// kind affects bullet rendering: "round" | "tracer" | "pellet" | "rocket" | "bolt" | "beam" | "plasma"
+const GUN_STATS = {
+  // ── COMMON ─────────────────────────────────────────────────────────
+  pistol:      { label:"Pistol",        rarity:"common",    dmg:18,  cooldown:8,  bullets:1, spread:0,    speed:9,  range:520, maxAmmo:30,  color:"#ffe066", kind:"round"  },
+  smg:         { label:"SMG",           rarity:"common",    dmg:10,  cooldown:3,  bullets:1, spread:0.10, speed:10, range:480, maxAmmo:60,  color:"#ffd24a", kind:"round"  },
+  revolver:    { label:"Revolver",      rarity:"common",    dmg:32,  cooldown:18, bullets:1, spread:0.02, speed:11, range:620, maxAmmo:18,  color:"#dddddd", kind:"round"  },
+  pumpgun:     { label:"Pump Shotgun",  rarity:"common",    dmg:30,  cooldown:32, bullets:6, spread:0.28, speed:9,  range:160, maxAmmo:14,  color:"#e89030", kind:"pellet" },
+  // ── UNCOMMON ───────────────────────────────────────────────────────
+  shotgun:     { label:"Shotgun",       rarity:"uncommon",  dmg:32,  cooldown:24, bullets:7, spread:0.22, speed:9,  range:180, maxAmmo:18,  color:"#ff9a3c", kind:"pellet" },
+  carbine:     { label:"Carbine",       rarity:"uncommon",  dmg:24,  cooldown:10, bullets:1, spread:0.05, speed:13, range:720, maxAmmo:24,  color:"#ffd07a", kind:"round"  },
+  doublepistol:{ label:"Akimbo Pistols",rarity:"uncommon",  dmg:14,  cooldown:5,  bullets:2, spread:0.05, speed:9,  range:500, maxAmmo:60,  color:"#ffe066", kind:"round"  },
+  // ── RARE ───────────────────────────────────────────────────────────
+  ar15:        { label:"AR-15",         rarity:"rare",      dmg:34,  cooldown:6,  bullets:1, spread:0.04, speed:14, range:900, maxAmmo:30,  color:"#ffae33", kind:"round"  },
+  crossbow:    { label:"Crossbow",      rarity:"rare",      dmg:65,  cooldown:32, bullets:1, spread:0,    speed:14, range:1100,maxAmmo:12,  color:"#a08060", kind:"bolt",   pierce:3 },
+  burstrifle:  { label:"Burst Rifle",   rarity:"rare",      dmg:20,  cooldown:14, bullets:3, spread:0.04, speed:14, range:800, maxAmmo:30,  color:"#ffc04a", kind:"round"  },
+  flak:        { label:"Flak Cannon",   rarity:"rare",      dmg:38,  cooldown:32, bullets:5, spread:0.30, speed:8,  range:220, maxAmmo:24,  color:"#b3ff66", kind:"pellet" },
+  // ── LEGENDARY ──────────────────────────────────────────────────────
+  minigun:     { label:"Minigun",       rarity:"legendary", dmg:6,   cooldown:2,  bullets:1, spread:0.14, speed:12, range:520, maxAmmo:200, color:"#ffe066", kind:"round"  },
+  laser:       { label:"Laser",         rarity:"legendary", dmg:22,  cooldown:5,  bullets:1, spread:0,    speed:18, range:800, maxAmmo:50,  color:"#ff4ad1", kind:"beam"   },
+  plasma:      { label:"Plasma Rifle",  rarity:"legendary", dmg:38,  cooldown:16, bullets:1, spread:0,    speed:12, range:700, maxAmmo:24,  color:"#7affd0", kind:"plasma", aoe:36, aoeDmg:18 },
+  sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:90, bullets:1, spread:0,    speed:22, range:1400,maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4 },
+  // ── MYTHIC ─────────────────────────────────────────────────────────
+  rocket:      { label:"RPG",           rarity:"mythic",    dmg:55,  cooldown:55, bullets:1, spread:0,    speed:7,  range:900, maxAmmo:5,   color:"#ff5252", kind:"rocket", aoe:90,  aoeDmg:45  },
+  railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:75, bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8 },
+  bfg:         { label:"BFG-9000",      rarity:"mythic",    dmg:180, cooldown:110,bullets:1, spread:0,    speed:5,  range:700, maxAmmo:3,   color:"#aaff66", kind:"rocket", aoe:180, aoeDmg:160 },
+  thunder:     { label:"Thunder Cannon",rarity:"mythic",    dmg:55,  cooldown:8,  bullets:1, spread:0.02, speed:24, range:900, maxAmmo:40,  color:"#dceaff", kind:"beam"   },
+  // ⚡⚡ AIRDROP-ONLY god weapons (never appear in normal crates)
+  masterbolt:  { label:"Master Bolt",   rarity:"mythic",    dmg:140, cooldown:7,  bullets:1, spread:0,    speed:30, range:1200,maxAmmo:40,  color:"#ffd24a", kind:"beam",   pierce:6, airdropOnly:true, lore:"Zeus's thunderbolt forged by Cyclopes" },
+  trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:60, bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" }
+};
+const GUN_NAMES = Object.keys(GUN_STATS);
+const MAX_INVENTORY = 5;
+
+// Bot gun pool — bot draws weapons up to a tier cap derived from current level.
+// Mapping from rarity → tier (1 easy → 5 endgame).
+const RARITY_TIER = { common:1, uncommon:2, rare:3, legendary:4, mythic:5 };
+const GUN_TIERS = {};
+GUN_NAMES.forEach(n => { GUN_TIERS[n] = RARITY_TIER[GUN_STATS[n].rarity] || 1; });
+
+function chooseBotGun(maxTier){
+  // map old 1-6 maxTier curve onto new 1-5 rarity tiers
+  const cap = Math.max(1, Math.min(5, Math.ceil(maxTier * 5 / 6)));
+  const pool = GUN_NAMES.filter(g => GUN_TIERS[g] <= cap);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// 🎲 Weighted random gun pick by rarity (used when crates spawn loot)
+// Skips airdropOnly guns (those only fall from the sky in airdrops).
+function randomGunByRarity(){
+  const pool = GUN_NAMES.filter(n => !GUN_STATS[n].airdropOnly);
+  const totalW = pool.reduce((a,n)=> a + (RARITY[GUN_STATS[n].rarity].weight), 0);
+  let roll = Math.random() * totalW;
+  for (const n of pool) {
+    roll -= RARITY[GUN_STATS[n].rarity].weight;
+    if (roll <= 0) return n;
+  }
+  return "pistol";
+}
+
+// ⚡ Pick a god-tier gun for an airdrop (mythic-only, with the airdropOnly weapons heavily favored)
+function chooseAirdropGun(){
+  const godPool = GUN_NAMES.filter(n => GUN_STATS[n].airdropOnly);
+  const mythPool = GUN_NAMES.filter(n => GUN_STATS[n].rarity === "mythic" && !GUN_STATS[n].airdropOnly);
+  // 70% chance: pick a god weapon (Master Bolt or Trident).
+  // 30% chance: pick a regular mythic for variety (RPG, BFG, etc.).
+  if (godPool.length && Math.random() < 0.70) {
+    return godPool[Math.floor(Math.random() * godPool.length)];
+  }
+  if (mythPool.length) return mythPool[Math.floor(Math.random() * mythPool.length)];
+  return "rocket";
+}
+
+// 🚪 LOBBY PORTAL
+const portal = { x: lobby.width/2 - 30, y: lobby.height/2 - 30, size: 60 };
+
+// INPUT
+let keys = {};
+let mouse = {x:0,y:0};
+
+document.addEventListener("keydown",e=>{
+  keys[e.key.toLowerCase()] = true;
+  if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+  }
+});
+document.addEventListener("keyup",e=>{
+  keys[e.key.toLowerCase()] = false;
+});
+
+// raw screen-space mouse (for inventory UI), plus world-space mouse (for aim)
+let mouseScreen = {x:0, y:0};
+let dragSlot = null;        // index of slot being dragged
+let dragOrigin = {x:0,y:0};
+
+canvas.addEventListener("mousemove",e=>{
+  let r = canvas.getBoundingClientRect();
+  mouseScreen.x = e.clientX - r.left;
+  mouseScreen.y = e.clientY - r.top;
+  mouse.x = mouseScreen.x + cam.x;
+  mouse.y = mouseScreen.y + cam.y;
+});
+canvas.addEventListener("mousedown", onMouseDown);
+canvas.addEventListener("mouseup",   onMouseUp);
+canvas.addEventListener("mouseleave",onMouseUp);
+
+// Press E to pick up nearby gun
+document.addEventListener("keydown", e=>{
+  if (e.key.toLowerCase() === "e") tryPickupNearby();
+  // hotkeys 1-5 to switch active slot
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= MAX_INVENTORY) selectSlot(n - 1);
+});
+
+// 🎮 PLAYER
+function resetPlayer(spawnX, spawnY){
+  player = {
+    x: spawnX, y: spawnY,
+    size: 22,
+    speed: 4,
+    hp: 100,
+    maxHp: 100,
+    inv: 0,
+    cooldown: 0,
+    aim: 0,                 // facing angle (radians)
+    // upgrades from gold chests (additive)
+    damageBonus: 0,
+    fireRateLevel: 0,
+    bulletSpeedBonus: 0,
+    multishot: 0,
+    // 🎒 inventory (max 5 guns)
+    inventory: [{ gun:"pistol", ammo: GUN_STATS.pistol.maxAmmo }],
+    activeSlot: 0
+  };
+}
+
+function activeEntry(){
+  return player.inventory[player.activeSlot] || null;
+}
+function activeGun(){
+  const e = activeEntry();
+  return e ? GUN_STATS[e.gun] : null;
+}
+function selectSlot(i){
+  if (i >= 0 && i < player.inventory.length) {
+    player.activeSlot = i;
+  }
+}
+function tryAddGun(name){
+  if (!GUN_STATS[name]) return false;
+  if (player.inventory.length >= MAX_INVENTORY) return false;
+  player.inventory.push({ gun:name, ammo: GUN_STATS[name].maxAmmo });
+  player.activeSlot = player.inventory.length - 1;
+  return true;
+}
+function dropSlot(i){
+  if (i < 0 || i >= player.inventory.length) return;
+  player.inventory.splice(i, 1);
+  if (player.inventory.length === 0) {
+    // always keep at least the pistol so the player can fight
+    player.inventory.push({ gun:"pistol", ammo: GUN_STATS.pistol.maxAmmo });
+  }
+  player.activeSlot = Math.max(0, Math.min(player.activeSlot, player.inventory.length - 1));
+}
+
+// 🌐 CURRENT WORLD HELPER
+function world() { return scene === "playing" ? dojo : lobby; }
+
+// 🏚️ BUILDING (rectangular hut with a door + loot inside)
+function spawnBuilding(x, y, w, h){
+  const t = 8;                      // wall thickness
+  const doorW = 40;
+  const doorX = x + w/2 - doorW/2;  // centered on south wall
+  const b = {
+    x, y, w, h, doorW,
+    walls: [
+      { x: x,             y: y,         w: w,                       h: t }, // top
+      { x: x,             y: y+h-t,     w: doorX - x,               h: t }, // bottom-left
+      { x: doorX+doorW,   y: y+h-t,     w: (x+w) - (doorX+doorW),   h: t }, // bottom-right
+      { x: x,             y: y,         w: t,                       h: h }, // left
+      { x: x+w-t,         y: y,         w: t,                       h: h }  // right
+    ],
+    door: { x: doorX, y: y+h-t, w: doorW, h: t }
+  };
+  buildings.push(b);
+  walls.push(...b.walls);
+
+  // loot inside — gold chest + 3 gun crates per apartment
+  const cx = x + w/2, cy = y + h/2;
+  goldChests.push({
+    x: cx - 16, y: cy - 32,
+    size: 32, pulse: Math.random()*Math.PI*2
+  });
+  crates.push({
+    x: cx - 60, y: cy + 4, size: 32,
+    gun: randomGunByRarity()
+  });
+  crates.push({
+    x: cx + 28, y: cy + 4, size: 32,
+    gun: randomGunByRarity()
+  });
+  crates.push({
+    x: cx - 16, y: cy + 30, size: 32,
+    gun: randomGunByRarity()
+  });
+  return b;
+}
+
+function rectsOverlap(a, b, pad){
+  pad = pad || 0;
+  return a.x - pad < b.x + b.w &&
+         a.x + a.w + pad > b.x &&
+         a.y - pad < b.y + b.h &&
+         a.y + a.h + pad > b.y;
+}
+function pointInAnyBuilding(x, y, pad){
+  pad = pad || 0;
+  for (const b of buildings) {
+    if (x > b.x - pad && x < b.x + b.w + pad &&
+        y > b.y - pad && y < b.y + b.h + pad) return true;
+  }
+  return false;
+}
+
+// 🔄 SPAWN COMBAT LEVEL
+function spawnLevel(){
+  enemies = [];
+  crates = [];
+  goldChests = [];
+  ammoBoxes = [];
+  healthPacks = [];
+  pickups = [];
+  buildings = [];
+  walls = [];
+  bushes = [];
+  airdrops = [];
+
+  // 🏚️ Place 4 apartments (no overlap, not on player spawn) — try harder
+  const playerSafe = { x: 280, y: 280, w: 120, h: 120 };
+  let attempts = 0;
+  while (buildings.length < 4 && attempts < 200){
+    attempts++;
+    const w = 170, h = 150;
+    const cand = {
+      x: 200 + Math.random() * (dojo.width  - w - 260),
+      y: 200 + Math.random() * (dojo.height - h - 260),
+      w, h
+    };
+    let ok = !rectsOverlap(cand, playerSafe, 60);
+    if (ok) {
+      for (const b of buildings){
+        if (rectsOverlap(cand, b, 60)) { ok = false; break; }
+      }
+    }
+    if (ok) spawnBuilding(cand.x, cand.y, w, h);
+  }
+
+  // 🌿 Bushes scattered around (not inside walls)
+  for (let i=0;i<14;i++){
+    const bx = 80 + Math.random()*(dojo.width - 160);
+    const by = 80 + Math.random()*(dojo.height - 160);
+    if (pointInAnyBuilding(bx, by, 12)) continue;
+    bushes.push({ x: bx, y: by, r: 14 + Math.random()*12, hp: 5, maxHp: 5 });
+  }
+
+  // 👤 ONE rival bot (1v1 duel), scaled to current level
+  enemyBullets = [];
+  const s = levelStats(level);
+  let bx, by, tries = 0;
+  do {
+    bx = 800 + Math.random()*500;
+    by = 600 + Math.random()*500;
+    tries++;
+  } while (pointInAnyBuilding(bx, by, 28) && tries < 30);
+  const botGun = chooseBotGun(s.maxTier);
+  enemies.push({
+    x: bx, y: by, size: 24,
+    speed: s.speed,
+    hp: s.hp, maxHp: s.hp,
+    aim: 0,
+    gun: botGun,
+    cooldown: 90,                 // give the player a moment before first shot
+    cooldownMult: s.cooldownMult,
+    dmgMult: s.dmgMult,
+    spread: s.spread,
+    strafeDir: Math.random() < 0.5 ? -1 : 1,
+    strafeTimer: 60 + Math.random()*90
+  });
+
+  // 📦 A couple of outdoor gun crates (in addition to those inside buildings)
+  const numOutdoorCrates = 1 + (Math.random() < 0.5 ? 1 : 0);
+  for (let i=0;i<numOutdoorCrates;i++){
+    let cx, cy, tries=0;
+    do {
+      cx = 300 + Math.random()*1000;
+      cy = 300 + Math.random()*800;
+      tries++;
+    } while (pointInAnyBuilding(cx, cy, 24) && tries < 10);
+    crates.push({
+      x:cx, y:cy, size:32,
+      gun: randomGunByRarity()
+    });
+  }
+
+  // 🥫 Ammo boxes outside buildings
+  for (let i=0;i<3;i++){
+    let ax, ay, tries=0;
+    do {
+      ax = 300 + Math.random()*1000;
+      ay = 300 + Math.random()*800;
+      tries++;
+    } while (pointInAnyBuilding(ax, ay, 16) && tries < 10);
+    ammoBoxes.push({ x:ax, y:ay, size:20 });
+  }
+
+  // ❤️ Health packs
+  if (Math.random() < 0.5) {
+    let hx, hy, tries=0;
+    do {
+      hx = 300 + Math.random()*1000;
+      hy = 300 + Math.random()*800;
+      tries++;
+    } while (pointInAnyBuilding(hx, hy, 18) && tries < 10);
+    healthPacks.push({ x:hx, y:hy, size:22, pulse: Math.random()*Math.PI*2 });
+  }
+  if (player && player.hp < player.maxHp * 0.5 && Math.random() < 0.7) {
+    let hx, hy, tries=0;
+    do {
+      hx = 300 + Math.random()*1000;
+      hy = 300 + Math.random()*800;
+      tries++;
+    } while (pointInAnyBuilding(hx, hy, 18) && tries < 10);
+    healthPacks.push({ x:hx, y:hy, size:22, pulse: Math.random()*Math.PI*2 });
+  }
+
+  // ⚡ AIRDROP — falls from the sky carrying a god-tier mythic gun.
+  // 1 guaranteed every level, plus a small chance of a second one.
+  spawnAirdrop();
+  if (Math.random() < 0.20) spawnAirdrop();
+}
+
+// ⚡ Spawn an airdrop somewhere in the dojo (away from buildings).
+function spawnAirdrop(){
+  let ax, ay, tries = 0;
+  do {
+    ax = 200 + Math.random() * (dojo.width  - 400);
+    ay = 200 + Math.random() * (dojo.height - 400);
+    tries++;
+  } while (pointInAnyBuilding(ax, ay, 36) && tries < 25);
+  airdrops.push({
+    x: ax,
+    y: ay - 360,        // start high above the landing spot
+    targetY: ay,
+    fallSpeed: 1.6,
+    landed: false,
+    sway: Math.random() * Math.PI * 2,
+    gun: chooseAirdropGun(),
+    glow: 0
+  });
+  // announce it
+  pushPickup(player ? player.x + player.size/2 : 600,
+             player ? player.y - 30 : 400,
+             "AIRDROP INCOMING!", "#ffd24a");
+}
+
+// 🎁 GOLD CHEST UPGRADE
+function applyGoldUpgrade(){
+  const choices = [
+    { name:"+5 Damage",     apply:()=>{ player.damageBonus += 5; } },
+    { name:"+Fire Rate",    apply:()=>{ player.fireRateLevel += 1; } },
+    { name:"+Ammo (all)",   apply:()=>{ player.inventory.forEach(s=>{ if(s){ const g=GUN_STATS[s.gun]; s.ammo = Math.min((g.maxAmmo||999)+50, s.ammo + 40); } }); } },
+    { name:"+Bullet Speed", apply:()=>{ player.bulletSpeedBonus += 2; } },
+    { name:"+Multishot",    apply:()=>{ player.multishot += 1; } },
+    { name:"+20 Max HP",    apply:()=>{ player.maxHp += 20; player.hp = Math.min(player.maxHp, player.hp+20); } }
+  ];
+  const pick = choices[Math.floor(Math.random()*choices.length)];
+  pick.apply();
+  return pick.name;
+}
+
+// 🖱️ MOUSE HANDLERS (split by region: inventory bar vs world)
+function onMouseDown(e){
+  // ignore clicks if we're on the inventory strip
+  const slotIdx = slotAtScreen(mouseScreen.x, mouseScreen.y);
+  if (slotIdx >= 0) {
+    if (slotIdx < player.inventory.length) {
+      // start a drag (which also acts as a "select" if released in place)
+      dragSlot = slotIdx;
+      dragOrigin.x = mouseScreen.x;
+      dragOrigin.y = mouseScreen.y;
+    }
+    return; // never fire when interacting with the bar
+  }
+  shoot();
+}
+function onMouseUp(e){
+  if (dragSlot !== null) {
+    const overSlot = slotAtScreen(mouseScreen.x, mouseScreen.y);
+    const movedFar =
+      Math.hypot(mouseScreen.x - dragOrigin.x, mouseScreen.y - dragOrigin.y) > 28;
+    if (overSlot < 0 && movedFar) {
+      // dropped outside the bar — discard this gun
+      const removed = player.inventory[dragSlot];
+      if (removed) {
+        pushPickup(player.x, player.y - 18, "Dropped " + (GUN_STATS[removed.gun].label), "#bbb");
+      }
+      dropSlot(dragSlot);
+    } else {
+      // simple click on a slot — select it
+      selectSlot(dragSlot);
+    }
+    dragSlot = null;
+  }
+}
+
+// 🤝 PICKUP (E key)
+function tryPickupNearby(){
+  if (scene !== "playing") return;
+  // find nearest crate within reach
+  let best = null, bestDist = 60;
+  for (const c of crates) {
+    const cx = c.x + c.size/2, cy = c.y + c.size/2;
+    const px = player.x + player.size/2, py = player.y + player.size/2;
+    const d = Math.hypot(px - cx, py - cy);
+    if (d < bestDist) { best = c; bestDist = d; }
+  }
+  if (!best) return;
+  if (player.inventory.length >= MAX_INVENTORY) {
+    pushPickup(best.x, best.y, "Inventory full!", "#ff6b6b");
+    return;
+  }
+  if (tryAddGun(best.gun)) {
+    pushPickup(best.x, best.y, "Picked up " + GUN_STATS[best.gun].label, "#fff");
+    score += 25;
+    best.dead = true;
+  }
+}
+
+// 🔫 SHOOT (uses active inventory slot)
+function shoot(){
+  if (scene !== "playing") return;
+  const entry = activeEntry();
+  if (!entry) return;
+  if (entry.ammo <= 0) return;
+  if (player.cooldown > 0) return;
+
+  const g = GUN_STATS[entry.gun];
+
+  player.cooldown = Math.max(2, g.cooldown - player.fireRateLevel);
+  entry.ammo--;
+
+  const dx = mouse.x - (player.x + player.size/2);
+  const dy = mouse.y - (player.y + player.size/2);
+  const baseAng = Math.atan2(dy, dx);
+
+  const speed = g.speed + player.bulletSpeedBonus;
+  const dmg = g.dmg + player.damageBonus;
+  const life = Math.ceil(g.range / speed);
+
+  // shotgun/flak fire fixed pellets; otherwise multishot upgrade adds extras
+  const fan = (g.bullets > 1) ? g.bullets : (1 + player.multishot);
+  const spreadBase = g.spread || ((g.bullets > 1) ? 0.18 : 0);
+
+  for (let i=0;i<fan;i++){
+    const offset = fan === 1
+      ? 0
+      : (i - (fan-1)/2) * spreadBase + (Math.random()-0.5) * (g.spread*0.4);
+    const ang = baseAng + offset;
+    bullets.push({
+      x: player.x + player.size/2,
+      y: player.y + player.size/2,
+      dx: Math.cos(ang) * speed,
+      dy: Math.sin(ang) * speed,
+      ang: ang,
+      size: (g.kind === "rocket") ? 7 : (g.kind === "bolt" ? 4 : (g.kind === "tracer" ? 3 : (g.kind === "pellet" ? 4 : 5))),
+      dmg: dmg,
+      life: life,
+      pierce: g.pierce ? g.pierce : 0,    // number of additional hits allowed
+      hits: 0,
+      color: g.color,
+      kind: g.kind,
+      aoe: g.aoe || 0,
+      aoeDmg: g.aoeDmg || 0
+    });
+  }
+}
+
+// 🎯 COLLISION (AABB)
+function hit(a,b){
+  return a.x < b.x+b.size &&
+         a.x+a.size > b.x &&
+         a.y < b.y+b.size &&
+         a.y+a.size > b.y;
+}
+
+// 🚶 MOVE
+function move(){
+  if(keys["w"] || keys["arrowup"])    player.y -= player.speed;
+  if(keys["s"] || keys["arrowdown"])  player.y += player.speed;
+  if(keys["a"] || keys["arrowleft"])  player.x -= player.speed;
+  if(keys["d"] || keys["arrowright"]) player.x += player.speed;
+
+  const w = world();
+  player.x = Math.max(0, Math.min(w.width  - player.size, player.x));
+  player.y = Math.max(0, Math.min(w.height - player.size, player.y));
+
+  // wall collisions
+  resolveWallCollisions(player);
+
+  // update facing angle from mouse
+  player.aim = Math.atan2(mouse.y - (player.y+player.size/2),
+                          mouse.x - (player.x+player.size/2));
+}
+
+// 🧱 push an entity (with x, y, size) out of any wall it overlaps
+function resolveWallCollisions(ent){
+  for (const w of walls) {
+    if (ent.x < w.x + w.w &&
+        ent.x + ent.size > w.x &&
+        ent.y < w.y + w.h &&
+        ent.y + ent.size > w.y) {
+      const overlapX = Math.min(ent.x + ent.size - w.x, w.x + w.w - ent.x);
+      const overlapY = Math.min(ent.y + ent.size - w.y, w.y + w.h - ent.y);
+      if (overlapX < overlapY) {
+        if (ent.x + ent.size/2 < w.x + w.w/2) ent.x -= overlapX;
+        else                                   ent.x += overlapX;
+      } else {
+        if (ent.y + ent.size/2 < w.y + w.h/2) ent.y -= overlapY;
+        else                                   ent.y += overlapY;
+      }
+    }
+  }
+}
+
+// 🧠 BOT AI — strafes around an ideal range, fires its gun
+function enemyAI(e){
+  const px = player.x + player.size/2;
+  const py = player.y + player.size/2;
+  const ex = e.x + e.size/2;
+  const ey = e.y + e.size/2;
+  const dx = px - ex, dy = py - ey;
+  const dist = Math.hypot(dx, dy) || 1;
+
+  // preferred firing range varies a bit per gun
+  const g = GUN_STATS[e.gun] || GUN_STATS.pistol;
+  const ideal = (g.kind === "pellet" || g.kind === "rocket") ? 160 : 240;
+
+  let mx = 0, my = 0;
+  if (dist > ideal + 30)      { mx = dx/dist;  my = dy/dist; }
+  else if (dist < ideal - 30) { mx = -dx/dist; my = -dy/dist; }
+
+  // strafing tangent (perpendicular to the line to player)
+  e.strafeTimer--;
+  if (e.strafeTimer <= 0) {
+    e.strafeDir *= -1;
+    e.strafeTimer = 60 + Math.random()*90;
+  }
+  const tanX = -dy/dist, tanY = dx/dist;
+  mx += tanX * 0.6 * e.strafeDir;
+  my += tanY * 0.6 * e.strafeDir;
+
+  const ml = Math.hypot(mx, my) || 1;
+  e.x += (mx / ml) * e.speed;
+  e.y += (my / ml) * e.speed;
+  e.aim = Math.atan2(dy, dx);
+
+  // walls block bot too
+  resolveWallCollisions(e);
+
+  // shoot
+  if (e.cooldown > 0) e.cooldown--;
+  if (e.cooldown <= 0) botShoot(e);
+
+  // contact damage if the bot rams the player
+  if (hit(player, e) && player.inv <= 0) {
+    player.hp -= 8;
+    player.inv = 40;
+  }
+}
+
+// 🤖 BOT SHOOTING
+function botShoot(e){
+  const g = GUN_STATS[e.gun];
+  e.cooldown = Math.max(8, Math.round(g.cooldown * e.cooldownMult));
+
+  const ang0 = e.aim;
+  const speed = g.speed;
+  // cap insta-kill snipers; otherwise scale by dmgMult
+  const baseDmg = (g.dmg >= 9999) ? 60 : g.dmg;
+  const dmg  = Math.max(1, Math.round(baseDmg * e.dmgMult));
+  const life = Math.ceil(g.range / speed);
+
+  const fan = g.bullets || 1;
+  const spreadBase = g.spread || 0;
+
+  for (let i=0; i<fan; i++){
+    const fanOffset = (fan === 1) ? 0 : (i - (fan-1)/2) * spreadBase;
+    const wobble = (Math.random() - 0.5) * e.spread * 2;
+    const ang = ang0 + fanOffset + wobble;
+    enemyBullets.push({
+      x: e.x + e.size/2,
+      y: e.y + e.size/2,
+      dx: Math.cos(ang) * speed,
+      dy: Math.sin(ang) * speed,
+      ang: ang,
+      size: (g.kind === "rocket") ? 7 : (g.kind === "bolt" ? 4 : 5),
+      dmg: dmg,
+      life: life,
+      pierce: 0, hits: 0,
+      color: g.color,
+      kind: g.kind,
+      aoe: g.aoe || 0,
+      aoeDmg: Math.round((g.aoeDmg || 0) * e.dmgMult)
+    });
+  }
+}
+
+// 💥 enemy AOE explosion (damages player only)
+function explodeEnemyBullet(b){
+  const r = b.aoe;
+  const pcx = player.x + player.size/2;
+  const pcy = player.y + player.size/2;
+  const d   = Math.hypot(pcx - b.x, pcy - b.y);
+  if (d < r && player.inv <= 0) {
+    const falloff = 1 - (d / r) * 0.5;
+    player.hp -= Math.round(b.aoeDmg * falloff);
+    player.inv = 30;
+  }
+  explosions.push({ x:b.x, y:b.y, r:r, life:18, max:18 });
+}
+
+// 🎥 CAMERA
+function updateCamera(){
+  const w = world();
+  cam.x = (player.x + player.size/2) - 300;
+  cam.y = (player.y + player.size/2) - 225;
+  cam.x = Math.max(0, Math.min(Math.max(0, w.width  - 600), cam.x));
+  cam.y = Math.max(0, Math.min(Math.max(0, w.height - 450), cam.y));
+}
+
+// ⏪ ENTER LOBBY (between runs and at start)
+function enterLobby(){
+  scene = "lobby";
+  level = 1;
+  score = 0;
+  savedNewRecord = false;
+  bullets = [];
+  enemies = [];
+  crates = [];
+  goldChests = [];
+  ammoBoxes = [];
+  healthPacks = [];
+  pickups = [];
+  explosions = [];
+  buildings = [];
+  walls = [];
+  bushes = [];
+  enemyBullets = [];
+  airdrops = [];
+  // a little greenery around the lobby HQ
+  for (let i=0;i<10;i++){
+    bushes.push({
+      x: 60 + Math.random()*(lobby.width - 120),
+      y: 60 + Math.random()*(lobby.height - 120),
+      r: 14 + Math.random()*10,
+      hp: 5, maxHp: 5
+    });
+  }
+  resetPlayer(lobby.width/2 - 11, lobby.height/2 + 90); // below the portal
+}
+
+// ▶️ ENTER COMBAT
+function enterCombat(){
+  scene = "playing";
+  level = 1;
+  score = 0;
+  savedNewRecord = false;
+  bullets = [];
+  // keep upgrades fresh per run (start clean)
+  resetPlayer(300, 300);
+  spawnLevel();
+}
+
+// 🏅 RECORD CHECK
+function commitBests(){
+  let updated = false;
+  if (level > bests.bestLevel) { bests.bestLevel = level; updated = true; }
+  if (score > bests.bestScore) { bests.bestScore = score; updated = true; }
+  if (updated) saveBests();
+  return updated;
+}
+
+// ⏰ DEATH HANDLER
+function onDeath(){
+  scene = "gameover";
+  if (!savedNewRecord) savedNewRecord = commitBests();
+  setTimeout(enterLobby, 1800);
+}
+
+// 💬 FLOATING TEXT
+function pushPickup(x, y, text, color){
+  pickups.push({ x, y, text, color, life: 60 });
+}
+
+// 🎮 UPDATE
+function update(){
+  if (scene === "lobby"){
+    move();
+    updateCamera();
+    // step on portal to start
+    if (hit(player, { x:portal.x, y:portal.y, size:portal.size })) {
+      enterCombat();
+    }
+    return;
+  }
+
+  if (scene === "gameover") return;
+
+  // ===== PLAYING =====
+  move();
+
+  if(player.cooldown > 0) player.cooldown--;
+  if(player.inv > 0) player.inv--;
+
+  if(player.hp <= 0){ onDeath(); return; }
+
+  // ⚡ AIRDROPS — animate falling crates and convert them to pickups on landing
+  for (let i = airdrops.length - 1; i >= 0; i--) {
+    const a = airdrops[i];
+    a.sway += 0.04;
+    if (!a.landed) {
+      a.y += a.fallSpeed;
+      if (a.y >= a.targetY) {
+        a.y = a.targetY;
+        a.landed = true;
+        // Promote to a regular crate so existing E-pickup logic works
+        crates.push({
+          x: a.x - 16, y: a.y - 16,
+          size: 32,
+          gun: a.gun,
+          airdrop: true
+        });
+        // Tiny landing burst
+        explosions.push({ x: a.x, y: a.y, r: 30, life: 12, max: 12 });
+        airdrops.splice(i, 1);
+      }
+    }
+  }
+
+  // bullets
+  bullets.forEach(b=>{ b.x += b.dx; b.y += b.dy; b.life--; });
+
+  // bullets vs walls (rockets explode on impact)
+  bullets.forEach(b=>{
+    if (b.dead) return;
+    for (const w of walls) {
+      if (b.x > w.x && b.x < w.x + w.w &&
+          b.y > w.y && b.y < w.y + w.h) {
+        if (b.aoe) explodeBullet(b);
+        b.dead = true;
+        break;
+      }
+    }
+  });
+
+  // bullets vs bushes (foliage stops shots and slowly chips the bush apart)
+  bullets.forEach(b=>{
+    if (b.dead) return;
+    for (let i = bushes.length - 1; i >= 0; i--) {
+      const bu = bushes[i];
+      const dx = b.x - bu.x, dy = b.y - bu.y;
+      if (dx*dx + dy*dy < bu.r*bu.r) {
+        if (b.aoe) {
+          explodeBullet(b);
+          bushes.splice(i, 1); // rocket vaporizes the bush
+        } else {
+          bu.hp -= 1;
+          if (bu.hp <= 0) bushes.splice(i, 1);
+        }
+        b.dead = true;
+        break;
+      }
+    }
+  });
+
+  // 🤖 ENEMY BULLETS — move, hit walls, hit player
+  enemyBullets.forEach(b=>{ b.x += b.dx; b.y += b.dy; b.life--; });
+  enemyBullets.forEach(b=>{
+    if (b.dead) return;
+    // walls block bot bullets too
+    for (const w of walls) {
+      if (b.x > w.x && b.x < w.x + w.w &&
+          b.y > w.y && b.y < w.y + w.h) {
+        if (b.aoe) explodeEnemyBullet(b);
+        b.dead = true;
+        return;
+      }
+    }
+    // bushes block bot bullets too (and chip away over multiple hits)
+    for (let i = bushes.length - 1; i >= 0; i--) {
+      const bu = bushes[i];
+      const dx = b.x - bu.x, dy = b.y - bu.y;
+      if (dx*dx + dy*dy < bu.r*bu.r) {
+        if (b.aoe) {
+          explodeEnemyBullet(b);
+          bushes.splice(i, 1);
+        } else {
+          bu.hp -= 1;
+          if (bu.hp <= 0) bushes.splice(i, 1);
+        }
+        b.dead = true;
+        return;
+      }
+    }
+    // hit player
+    if (player.x < b.x && b.x < player.x + player.size &&
+        player.y < b.y && b.y < player.y + player.size) {
+      if (b.aoe) {
+        explodeEnemyBullet(b);
+      } else if (player.inv <= 0) {
+        player.hp -= b.dmg;
+        player.inv = 30;
+      }
+      b.dead = true;
+    }
+  });
+  // expire-life rockets explode where they died
+  enemyBullets.forEach(b=>{
+    if (!b.dead && b.aoe && b.life <= 0) { explodeEnemyBullet(b); b.dead = true; }
+  });
+  enemyBullets = enemyBullets.filter(b=>{
+    if (b.dead) return false;
+    if (b.life <= 0) return false;
+    return b.x > -20 && b.y > -20 && b.x < dojo.width+20 && b.y < dojo.height+20;
+  });
+
+  // bullets vs enemies (with AOE handling)
+  bullets.forEach(b=>{
+    if (b.dead) return;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      if (hit(b,e)){
+        e.hp -= b.dmg;
+        if (e.hp <= 0) score += 10 * level;
+        if (b.aoe) { explodeBullet(b); b.dead = true; return; }
+        if (b.pierce > 0) {
+          b.hits++;
+          if (b.hits >= b.pierce) { b.dead = true; return; }
+        } else {
+          b.dead = true; return;
+        }
+      }
+    }
+  });
+  // rockets that run out of life still explode (so misses near the wall pop)
+  bullets.forEach(b=>{
+    if (!b.dead && b.aoe && b.life <= 0) { explodeBullet(b); b.dead = true; }
+  });
+  // cull bullets that ran out of range or left the world
+  bullets = bullets.filter(b=>{
+    if (b.dead) return false;
+    if (b.life <= 0) return false;
+    return b.x > -20 && b.y > -20 && b.x < dojo.width+20 && b.y < dojo.height+20;
+  });
+
+  enemies.forEach(enemyAI);
+
+  // crates: now picked up by E (handled in tryPickupNearby), just remove dead ones
+  crates = crates.filter(c=>!c.dead);
+
+  // health packs: heal +25 (don't pick up at full hp)
+  healthPacks.forEach(h=>{
+    h.pulse = (h.pulse || 0) + 0.1;
+    if (player.hp < player.maxHp && hit(player,h)){
+      const before = player.hp;
+      player.hp = Math.min(player.maxHp, player.hp + 25);
+      pushPickup(h.x, h.y, "+" + (player.hp - before) + " HP", "#7CFC00");
+      h.dead = true;
+    }
+  });
+  healthPacks = healthPacks.filter(h=>!h.dead);
+
+  // gold chests: permanent run upgrades
+  goldChests.forEach(g=>{
+    g.pulse += 0.08;
+    if(hit(player,g)){
+      const upgrade = applyGoldUpgrade();
+      score += 75;
+      pushPickup(g.x, g.y, upgrade, "#ffd24a");
+      g.dead = true;
+    }
+  });
+  goldChests = goldChests.filter(g=>!g.dead);
+
+  // ammo boxes — top up every gun in inventory
+  ammoBoxes.forEach(a=>{
+    if(hit(player,a)){
+      player.inventory.forEach(s=>{
+        if (s) {
+          const g = GUN_STATS[s.gun];
+          s.ammo = Math.min((g.maxAmmo || 999) + 100, s.ammo + 25);
+        }
+      });
+      pickups.push({ x:a.x, y:a.y, text:"+Ammo", color:"#ffd24a", life:40 });
+      a.dead = true;
+    }
+  });
+  ammoBoxes = ammoBoxes.filter(a=>!a.dead);
+
+  // dead enemies
+  enemies = enemies.filter(e=>e.hp > 0);
+
+  // pickups text float
+  pickups.forEach(p=>{ p.y -= 0.4; p.life--; });
+  pickups = pickups.filter(p=>p.life > 0);
+
+  explosions.forEach(ex=>{ ex.life--; });
+  explosions = explosions.filter(ex=>ex.life > 0);
+
+  // next level
+  if(enemies.length === 0){
+    score += 50 * level;
+    level++;
+    commitBests();
+    spawnLevel();
+  }
+
+  updateCamera();
+}
+
+// =====================================================================
+// 🎨 NINJA SPRITE
+// Draws a small ninja at world (x,y). `color` is the suit color.
+// `aim` is the facing angle in radians (for body rotation).
+// =====================================================================
+function drawNinja(x, y, size, color, aim, opts){
+  opts = opts || {};
+  const sx = x - cam.x + size/2;
+  const sy = y - cam.y + size/2;
+
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(aim + Math.PI/2); // rotate so head points toward aim
+
+  const s = size;
+  // body (suit)
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(0, 0.05*s, s*0.42, s*0.55, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // belt
+  ctx.fillStyle = opts.belt || "#c0392b";
+  ctx.fillRect(-s*0.42, s*0.0, s*0.84, s*0.12);
+
+  // head
+  ctx.fillStyle = "#f1c27d"; // skin
+  ctx.beginPath();
+  ctx.arc(0, -s*0.45, s*0.28, 0, Math.PI*2);
+  ctx.fill();
+
+  // mask band over eyes
+  ctx.fillStyle = color;
+  ctx.fillRect(-s*0.30, -s*0.55, s*0.60, s*0.18);
+
+  // eyes
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(-s*0.18, -s*0.50, s*0.10, s*0.06);
+  ctx.fillRect( s*0.08, -s*0.50, s*0.10, s*0.06);
+
+  // headband tail (flowing back, opposite of facing)
+  ctx.fillStyle = opts.belt || "#c0392b";
+  ctx.beginPath();
+  ctx.moveTo(s*0.18, -s*0.55);
+  ctx.lineTo(s*0.55, -s*0.30);
+  ctx.lineTo(s*0.18, -s*0.42);
+  ctx.closePath();
+  ctx.fill();
+
+  // arms holding gun out front
+  ctx.fillStyle = color;
+  ctx.fillRect(-s*0.48, -s*0.20, s*0.18, s*0.30);
+  ctx.fillRect( s*0.30, -s*0.20, s*0.18, s*0.30);
+
+  // gun (drawn pointing "up" in this rotated frame, i.e. toward aim)
+  drawGunShape(opts.gunKind || null, s);
+
+  ctx.restore();
+}
+
+// Draws a small gun pointing in -Y direction (in current transform).
+// Used both inside drawNinja and as a standalone icon (via drawGunIcon).
+function drawGunShape(kind, s){
+  switch (kind) {
+    case "smg":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.07, -s*0.55, s*0.14, s*0.55);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.16, -s*0.40, s*0.08, s*0.20); // mag
+      ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.10); // grip
+      break;
+    case "shotgun":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.07, -s*0.95, s*0.14, s*0.85); // long barrel
+      ctx.fillStyle="#7a4d22"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18); // wood stock
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.04, -s*0.50, s*0.08, s*0.10); // pump
+      break;
+    case "sniper":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.05, -s*1.05, s*0.10, s*0.95); // very long barrel
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.12, -s*0.60, s*0.24, s*0.10); // scope
+      ctx.fillStyle="#7a4d22"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.20); // stock
+      break;
+    case "ar15":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.06, -s*0.85, s*0.12, s*0.70);
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.12, -s*0.30, s*0.08, s*0.18); // mag
+      ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.16); // body
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.04, -s*0.20, s*0.08, s*0.04); // sight
+      break;
+    case "minigun":
+      ctx.fillStyle="#2b2b2b";
+      for (let i=-2;i<=2;i++){
+        ctx.fillRect(-s*0.06 + i*s*0.05, -s*0.80, s*0.04, s*0.65);
+      }
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.18, -s*0.20, s*0.36, s*0.18);
+      break;
+    case "rocket":
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.10, -s*0.95, s*0.20, s*0.85);
+      ctx.fillStyle="#c0392b"; ctx.fillRect(-s*0.12, -s*0.45, s*0.24, s*0.08); // band
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18);
+      break;
+    case "crossbow":
+      // bow arms
+      ctx.strokeStyle="#7a4d22"; ctx.lineWidth = Math.max(1.5, s*0.06);
+      ctx.beginPath();
+      ctx.moveTo(-s*0.40, -s*0.20);
+      ctx.quadraticCurveTo(0, -s*0.50, s*0.40, -s*0.20);
+      ctx.stroke();
+      // string
+      ctx.strokeStyle="#ddd"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-s*0.40, -s*0.20); ctx.lineTo(s*0.40, -s*0.20);
+      ctx.stroke();
+      // stock + bolt
+      ctx.fillStyle="#7a4d22"; ctx.fillRect(-s*0.05, -s*0.15, s*0.10, s*0.40);
+      ctx.fillStyle="#a08060"; ctx.fillRect(-s*0.02, -s*0.65, s*0.04, s*0.55);
+      break;
+    case "laser":
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.08, -s*0.75, s*0.16, s*0.60);
+      ctx.fillStyle="#ff4ad1"; ctx.fillRect(-s*0.04, -s*0.85, s*0.08, s*0.10); // emitter
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18);
+      break;
+    case "flak":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.12, -s*0.70, s*0.24, s*0.55);
+      ctx.fillStyle="#b3ff66"; ctx.fillRect(-s*0.09, -s*0.78, s*0.18, s*0.10);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18);
+      break;
+    case "revolver":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.06, -s*0.55, s*0.12, s*0.45);
+      ctx.fillStyle="#888";    ctx.beginPath(); ctx.arc(0, -s*0.18, s*0.13, 0, Math.PI*2); ctx.fill(); // cylinder
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.04, -s*0.10, s*0.10, s*0.20);
+      break;
+    case "pumpgun":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.07, -s*0.85, s*0.14, s*0.75);
+      ctx.fillStyle="#5a3010"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.20); // dark wood stock
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.05, -s*0.55, s*0.10, s*0.14); // pump
+      break;
+    case "carbine":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.05, -s*0.75, s*0.10, s*0.62);
+      ctx.fillStyle="#7a4d22"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.06, -s*0.30, s*0.12, s*0.06);
+      break;
+    case "doublepistol":
+      ctx.fillStyle="#2b2b2b";
+      ctx.fillRect(-s*0.18, -s*0.50, s*0.10, s*0.40);
+      ctx.fillRect( s*0.08, -s*0.50, s*0.10, s*0.40);
+      ctx.fillStyle="#3a3a3a";
+      ctx.fillRect(-s*0.18, -s*0.10, s*0.10, s*0.16);
+      ctx.fillRect( s*0.08, -s*0.10, s*0.10, s*0.16);
+      break;
+    case "burstrifle":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.06, -s*0.85, s*0.12, s*0.72);
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.16);
+      ctx.fillStyle="#ffc04a"; ctx.fillRect(-s*0.04, -s*0.20, s*0.08, s*0.04);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.12, -s*0.30, s*0.08, s*0.18);
+      break;
+    case "plasma":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.08, -s*0.75, s*0.16, s*0.60);
+      ctx.fillStyle="#7affd0"; ctx.beginPath(); ctx.arc(0, -s*0.80, s*0.10, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.18);
+      break;
+    case "railgun":
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.05, -s*1.10, s*0.10, s*1.00);
+      ctx.fillStyle="#aaffff"; ctx.fillRect(-s*0.04, -s*1.10, s*0.08, s*0.08);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.16, -s*0.55, s*0.32, s*0.10); // coils
+      ctx.fillRect(-s*0.16, -s*0.35, s*0.32, s*0.10);
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.20);
+      break;
+    case "bfg":
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.18, -s*0.85, s*0.36, s*0.70);
+      ctx.fillStyle="#aaff66"; ctx.beginPath(); ctx.arc(0, -s*0.55, s*0.14, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.14, -s*0.10, s*0.28, s*0.20);
+      break;
+    case "thunder":
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.08, -s*0.85, s*0.16, s*0.70);
+      ctx.fillStyle="#dceaff"; ctx.fillRect(-s*0.06, -s*0.95, s*0.12, s*0.12);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.14, -s*0.40, s*0.28, s*0.08);
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.10, -s*0.10, s*0.20, s*0.20);
+      break;
+    case "masterbolt":
+      // Zeus's thunderbolt — golden zig-zag + glow
+      ctx.fillStyle = "rgba(255,210,74,0.35)";
+      ctx.beginPath(); ctx.arc(0, -s*0.45, s*0.45, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#ffd24a";
+      ctx.beginPath();
+      ctx.moveTo(-s*0.10, -s*0.95);
+      ctx.lineTo( s*0.10, -s*0.55);
+      ctx.lineTo(-s*0.05, -s*0.40);
+      ctx.lineTo( s*0.15, -s*0.05);
+      ctx.lineTo( 0,        s*0.05);
+      ctx.lineTo(-s*0.18, -s*0.30);
+      ctx.lineTo( s*0.02, -s*0.50);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#a8780a"; ctx.lineWidth = 1; ctx.stroke();
+      break;
+    case "trident":
+      // Poseidon's trident — bronze pole with 3 prongs
+      ctx.fillStyle = "#7a4d22";
+      ctx.fillRect(-s*0.04, -s*0.50, s*0.08, s*0.55); // shaft
+      ctx.fillStyle = "#3aa0ff";
+      // outer prongs
+      ctx.beginPath();
+      ctx.moveTo(-s*0.30, -s*0.60); ctx.lineTo(-s*0.20, -s*1.00); ctx.lineTo(-s*0.10, -s*0.60); ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo( s*0.10, -s*0.60); ctx.lineTo( s*0.20, -s*1.00); ctx.lineTo( s*0.30, -s*0.60); ctx.closePath();
+      ctx.fill();
+      // middle prong (taller)
+      ctx.beginPath();
+      ctx.moveTo(-s*0.10, -s*0.60); ctx.lineTo(0, -s*1.10); ctx.lineTo( s*0.10, -s*0.60); ctx.closePath();
+      ctx.fill();
+      // crossbar
+      ctx.fillStyle = "#7a4d22";
+      ctx.fillRect(-s*0.32, -s*0.62, s*0.64, s*0.06);
+      break;
+    case "pistol":
+    default:
+      ctx.fillStyle="#2b2b2b"; ctx.fillRect(-s*0.06, -s*0.55, s*0.12, s*0.45);
+      ctx.fillStyle="#5a5a5a"; ctx.fillRect(-s*0.10, -s*0.20, s*0.20, s*0.10); // body
+      ctx.fillStyle="#3a3a3a"; ctx.fillRect(-s*0.04, -s*0.10, s*0.10, s*0.18); // grip
+      break;
+  }
+}
+
+// Draw a gun icon at screen coords (cx, cy) with size `s`, rotated `rot` rad.
+function drawGunIcon(kind, cx, cy, s, rot){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rot || 0);
+  drawGunShape(kind, s);
+  ctx.restore();
+}
+
+// 💥 EXPLOSION (player-fired) — damages enemies AND the player if in blast radius
+function explodeBullet(b){
+  const r = b.aoe || 60;
+  const dmg = b.aoeDmg || Math.round(b.dmg * 0.6);
+  // damage all enemies in radius
+  enemies.forEach(e=>{
+    if (e.hp <= 0) return;
+    const ex = e.x + e.size/2, ey = e.y + e.size/2;
+    const d = Math.hypot(ex - b.x, ey - b.y);
+    if (d < r) {
+      const falloff = 1 - (d / r) * 0.5;
+      e.hp -= Math.round(dmg * falloff);
+      if (e.hp <= 0) score += 10 * level;
+    }
+  });
+  // 💢 SELF-DAMAGE — careful with that rocket launcher!
+  const pcx = player.x + player.size/2;
+  const pcy = player.y + player.size/2;
+  const pd  = Math.hypot(pcx - b.x, pcy - b.y);
+  if (pd < r && player.inv <= 0) {
+    const falloff = 1 - (pd / r) * 0.5;
+    player.hp -= Math.round(dmg * falloff);
+    player.inv = 25;
+    pushPickup(pcx, pcy - 16, "Self-damage!", "#ff6b6b");
+  }
+  explosions.push({ x:b.x, y:b.y, r:r, life:18, max:18 });
+}
+
+// 🔫 BULLET RENDER
+function drawBullet(b){
+  const x = b.x - cam.x, y = b.y - cam.y;
+  const ang = b.ang || Math.atan2(b.dy, b.dx);
+  switch (b.kind) {
+    case "tracer": {
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - b.dx*0.7, y - b.dy*0.7);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      break;
+    }
+    case "beam": {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(-12, -1.5, 14, 3);
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fillRect(-8, -0.5, 8, 1);
+      ctx.restore();
+      break;
+    }
+    case "bolt": {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      // shaft
+      ctx.fillStyle = "#a08060";
+      ctx.fillRect(-10, -1, 12, 2);
+      // arrowhead
+      ctx.fillStyle = "#cccccc";
+      ctx.beginPath();
+      ctx.moveTo(2, 0); ctx.lineTo(-2, -3); ctx.lineTo(-2, 3); ctx.closePath();
+      ctx.fill();
+      // fletching
+      ctx.fillStyle = "#c0392b";
+      ctx.beginPath();
+      ctx.moveTo(-10, 0); ctx.lineTo(-13, -3); ctx.lineTo(-13, 3); ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case "rocket": {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      // smoke trail
+      for (let i=1;i<=4;i++){
+        ctx.fillStyle = "rgba(180,180,180," + (0.25 - i*0.05) + ")";
+        ctx.beginPath();
+        ctx.arc(-i*4, 0, 3 - i*0.3, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // body
+      ctx.fillStyle = "#3a3a3a";
+      ctx.fillRect(-6, -3, 10, 6);
+      // tip
+      ctx.fillStyle = "#c0392b";
+      ctx.beginPath();
+      ctx.moveTo(4, 0); ctx.lineTo(-2, -3); ctx.lineTo(-2, 3); ctx.closePath();
+      ctx.fill();
+      // fins
+      ctx.fillStyle = "#5a5a5a";
+      ctx.fillRect(-7, -4, 2, 2);
+      ctx.fillRect(-7,  2, 2, 2);
+      ctx.restore();
+      break;
+    }
+    case "pellet": {
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(x, y, b.size, 0, Math.PI*2);
+      ctx.fill();
+      break;
+    }
+    case "plasma": {
+      // glowing orb with bright core
+      ctx.fillStyle = "rgba(122,255,208,0.35)";
+      ctx.beginPath();
+      ctx.arc(x, y, b.size + 3, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(x, y, b.size, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, b.size*0.4), 0, Math.PI*2);
+      ctx.fill();
+      break;
+    }
+    case "round":
+    default: {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.fillStyle = b.color;
+      // capsule-ish bullet shape
+      ctx.fillRect(-3, -1.5, 4, 3);
+      ctx.beginPath();
+      ctx.arc(1, 0, 1.5, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = "#a07020";
+      ctx.fillRect(-5, -1.5, 2, 3); // brass casing tail
+      ctx.restore();
+      break;
+    }
+  }
+}
+
+// 🎒 INVENTORY BAR (bottom of canvas)
+const INV_BAR = { x: 600/2 - (5*52 + 4*6)/2, y: 400, slotW: 52, slotH: 40, gap: 6 };
+
+function slotAtScreen(mx, my){
+  if (my < INV_BAR.y - 4 || my > INV_BAR.y + INV_BAR.slotH + 4) return -1;
+  for (let i=0;i<MAX_INVENTORY;i++){
+    const x = INV_BAR.x + i*(INV_BAR.slotW + INV_BAR.gap);
+    if (mx >= x && mx < x + INV_BAR.slotW) return i;
+  }
+  return -1;
+}
+
+function drawInventoryBar(){
+  // backdrop
+  const totalW = MAX_INVENTORY * INV_BAR.slotW + (MAX_INVENTORY-1) * INV_BAR.gap;
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(INV_BAR.x - 6, INV_BAR.y - 6, totalW + 12, INV_BAR.slotH + 12);
+
+  for (let i=0;i<MAX_INVENTORY;i++){
+    const x = INV_BAR.x + i*(INV_BAR.slotW + INV_BAR.gap);
+    const y = INV_BAR.y;
+    const entry = player.inventory[i];
+    const active = (i === player.activeSlot && entry);
+
+    // slot box
+    ctx.fillStyle = entry ? "#2b2b2b" : "#1a1d22";
+    ctx.fillRect(x, y, INV_BAR.slotW, INV_BAR.slotH);
+    // rarity-tinted border (selected slot wins with bright yellow)
+    let borderColor = "#444";
+    if (entry) {
+      const r = GUN_STATS[entry.gun] && GUN_STATS[entry.gun].rarity;
+      if (r && RARITY[r]) borderColor = RARITY[r].color;
+    }
+    if (active) borderColor = "#ffd24a";
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = active ? 2 : 1.5;
+    ctx.strokeRect(x+0.5, y+0.5, INV_BAR.slotW-1, INV_BAR.slotH-1);
+
+    // hotkey
+    ctx.fillStyle = "#888";
+    ctx.font = "bold 9px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText(String(i+1), x + 3, y + 10);
+
+    if (entry) {
+      // gun icon centered
+      drawGunIcon(entry.gun, x + INV_BAR.slotW/2, y + INV_BAR.slotH/2 - 2, 16, 0);
+      // ammo count bottom-right
+      ctx.fillStyle = entry.ammo === 0 ? "#ff6b6b" : "#fff";
+      ctx.font = "bold 10px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText(entry.ammo, x + INV_BAR.slotW - 3, y + INV_BAR.slotH - 3);
+    } else {
+      ctx.fillStyle = "#444";
+      ctx.font = "10px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("empty", x + INV_BAR.slotW/2, y + INV_BAR.slotH/2 + 3);
+    }
+  }
+  ctx.textAlign = "start";
+
+  // dragging preview (gun follows cursor)
+  if (dragSlot !== null && player.inventory[dragSlot]) {
+    const entry = player.inventory[dragSlot];
+    drawGunIcon(entry.gun, mouseScreen.x, mouseScreen.y, 18, 0);
+    // hint text if outside the bar
+    if (slotAtScreen(mouseScreen.x, mouseScreen.y) < 0) {
+      ctx.fillStyle = "#ff8080";
+      ctx.font = "bold 11px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("release to drop", mouseScreen.x, mouseScreen.y - 14);
+      ctx.textAlign = "start";
+    }
+  }
+}
+
+// 🎨 DRAW
+function draw(){
+  ctx.clearRect(0,0,600,450);
+
+  if (scene === "lobby") {
+    drawLobby();
+  } else {
+    drawCombat();
+  }
+
+  drawCrosshair();
+}
+
+function drawCrosshair(){
+  // skip if mouse hasn't moved into canvas yet
+  if (mouseScreen.x <= 0 && mouseScreen.y <= 0) return;
+  const x = mouseScreen.x, y = mouseScreen.y;
+  const r = 10, gap = 3, t = 2;
+  // black outline for visibility on any background
+  ctx.strokeStyle = "rgba(0,0,0,0.85)";
+  ctx.lineWidth = t + 2;
+  ctx.beginPath();
+  ctx.moveTo(x - r, y); ctx.lineTo(x - gap, y);
+  ctx.moveTo(x + gap, y); ctx.lineTo(x + r, y);
+  ctx.moveTo(x, y - r); ctx.lineTo(x, y - gap);
+  ctx.moveTo(x, y + gap); ctx.lineTo(x, y + r);
+  ctx.stroke();
+  // bright inner cross
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = t;
+  ctx.beginPath();
+  ctx.moveTo(x - r, y); ctx.lineTo(x - gap, y);
+  ctx.moveTo(x + gap, y); ctx.lineTo(x + r, y);
+  ctx.moveTo(x, y - r); ctx.lineTo(x, y - gap);
+  ctx.moveTo(x, y + gap); ctx.lineTo(x, y + r);
+  ctx.stroke();
+  // center dot
+  ctx.fillStyle = "#ff5555";
+  ctx.beginPath();
+  ctx.arc(x, y, 1.6, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawWorldBg(w, h, tile){
+  // simple ground grid for spatial reference
+  ctx.fillStyle = "#1a1d22";
+  ctx.fillRect(0,0,600,450);
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  const step = 60;
+  const offX = -((cam.x) % step);
+  const offY = -((cam.y) % step);
+  for (let x = offX; x < 600; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 450); ctx.stroke();
+  }
+  for (let y = offY; y < 450; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(600, y); ctx.stroke();
+  }
+  // world border
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.strokeRect(-cam.x, -cam.y, w, h);
+}
+
+// 🌿 BUSH (a small cluster of leafy circles)
+function drawBush(b){
+  const x = b.x - cam.x, y = b.y - cam.y;
+  // shadow
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + b.r*0.6, b.r*0.9, b.r*0.35, 0, 0, Math.PI*2);
+  ctx.fill();
+  // dark base
+  ctx.fillStyle = "#234d28";
+  ctx.beginPath();
+  ctx.arc(x, y, b.r, 0, Math.PI*2);
+  ctx.fill();
+  // leafy lobes
+  ctx.fillStyle = "#2f7a3a";
+  ctx.beginPath(); ctx.arc(x - b.r*0.45, y - b.r*0.15, b.r*0.55, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + b.r*0.45, y - b.r*0.10, b.r*0.55, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x,             y - b.r*0.55, b.r*0.55, 0, Math.PI*2); ctx.fill();
+  // highlight
+  ctx.fillStyle = "rgba(180,255,160,0.30)";
+  ctx.beginPath();
+  ctx.arc(x - b.r*0.3, y - b.r*0.45, b.r*0.18, 0, Math.PI*2);
+  ctx.fill();
+}
+
+// ⚡ AIRDROP (parachute crate falling from the sky)
+function drawAirdrop(a){
+  const swayX = Math.sin(a.sway) * 6;
+  const x = (a.x + swayX) - cam.x;
+  const y = a.y - cam.y;
+
+  // shadow on the ground showing the impending landing spot
+  const fallProgress = Math.min(1, (a.y - (a.targetY - 360)) / 360); // 0 → 1
+  const shadowR = 18 + fallProgress * 12;
+  const shadowAlpha = 0.15 + fallProgress * 0.35;
+  const sy = a.targetY - cam.y;
+  ctx.fillStyle = "rgba(0,0,0," + shadowAlpha + ")";
+  ctx.beginPath();
+  ctx.ellipse(a.x - cam.x, sy + 6, shadowR, shadowR*0.4, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // parachute (semicircle)
+  ctx.fillStyle = "#ffd24a";
+  ctx.beginPath();
+  ctx.arc(x, y - 26, 24, Math.PI, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#a8780a";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x - 24, y - 26); ctx.lineTo(x - 8, y - 8);
+  ctx.moveTo(x,      y - 50); ctx.lineTo(x,     y - 8);
+  ctx.moveTo(x + 24, y - 26); ctx.lineTo(x + 8, y - 8);
+  ctx.stroke();
+  // chute panels
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y - 47); ctx.lineTo(x - 12, y - 26);
+  ctx.moveTo(x + 12, y - 47); ctx.lineTo(x + 12, y - 26);
+  ctx.stroke();
+
+  // crate body (golden glow + wood)
+  ctx.fillStyle = "rgba(255,210,74,0.35)";
+  ctx.beginPath();
+  ctx.arc(x, y, 22, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = "#8b5a2b";
+  ctx.fillRect(x - 14, y - 8, 28, 16);
+  ctx.strokeStyle = "#ffd24a";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x - 14 + 0.5, y - 8 + 0.5, 27, 15);
+  // ⚡ symbol
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 12px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("⚡", x, y + 4);
+  ctx.textAlign = "start";
+}
+
+// 🏚️ BUILDING (stone walls + door gap + dim interior)
+function drawBuilding(b){
+  const x = b.x - cam.x, y = b.y - cam.y;
+
+  // interior floor (slightly darker than ground)
+  ctx.fillStyle = "#33271c";
+  ctx.fillRect(x + 4, y + 4, b.w - 8, b.h - 8);
+  // tatami stripes
+  ctx.fillStyle = "rgba(140,100,60,0.15)";
+  for (let i = 0; i < 5; i++) {
+    ctx.fillRect(x + 8, y + 12 + i * ((b.h - 24) / 5), b.w - 16, 4);
+  }
+
+  // stone walls
+  for (const w of b.walls) {
+    const wx = w.x - cam.x, wy = w.y - cam.y;
+    ctx.fillStyle = "#5e564a";
+    ctx.fillRect(wx, wy, w.w, w.h);
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(wx + 0.5, wy + 0.5, w.w - 1, w.h - 1);
+    // brick highlight
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(wx, wy, w.w, Math.max(1, w.h * 0.25));
+  }
+
+  // door frame (wooden brown around the gap)
+  const d = b.door;
+  const dx = d.x - cam.x, dy = d.y - cam.y;
+  ctx.fillStyle = "#7a4d22";
+  ctx.fillRect(dx - 3, dy - 10, 3, 14);
+  ctx.fillRect(dx + d.w, dy - 10, 3, 14);
+  ctx.fillRect(dx - 3, dy - 12, d.w + 6, 3);
+  // dark doorway opening
+  ctx.fillStyle = "#1a120a";
+  ctx.fillRect(dx, dy - 10, d.w, 10);
+  // doorway hint text on first reveal
+  ctx.fillStyle = "rgba(255,210,74,0.55)";
+  ctx.font = "9px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("door", dx + d.w/2, dy + 11);
+  ctx.textAlign = "start";
+}
+
+function drawLobby(){
+  drawWorldBg(lobby.width, lobby.height);
+
+  // dojo floor pad
+  ctx.fillStyle = "#2a221c";
+  ctx.fillRect(60 - cam.x, 60 - cam.y, lobby.width-120, lobby.height-120);
+
+  // 🌿 lobby bushes
+  bushes.forEach(b=>drawBush(b));
+
+  // training dummies (decoration)
+  drawNinja(140, 200, 26, "#555",  Math.PI/2, { belt:"#888" });
+  drawNinja(lobby.width-160, 200, 26, "#555", Math.PI/2, { belt:"#888" });
+
+  // portal
+  const px = portal.x - cam.x, py = portal.y - cam.y;
+  const cx = px + portal.size/2, cy = py + portal.size/2;
+  const t = performance.now()/300;
+  // outer glow
+  for (let i=4; i>=0; i--){
+    ctx.fillStyle = "rgba(255,210,74," + (0.08 + 0.04*i) + ")";
+    ctx.beginPath();
+    ctx.arc(cx, cy, portal.size/2 + 8 + Math.sin(t)*2 + i*4, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // portal core
+  ctx.fillStyle = "#ffd24a";
+  ctx.beginPath();
+  ctx.arc(cx, cy, portal.size/2, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = "#1a1d22";
+  ctx.beginPath();
+  ctx.arc(cx, cy, portal.size/2 - 6, 0, Math.PI*2);
+  ctx.fill();
+
+  // sign
+  ctx.fillStyle = "#ffd24a";
+  ctx.font = "bold 18px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("ENTER THE DOJO", cx, py - 14);
+  ctx.fillStyle = "#aaa";
+  ctx.font = "12px Arial";
+  ctx.fillText("step into the portal to begin", cx, py - 0);
+
+  // welcome scroll
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 22px Arial";
+  ctx.fillText("Lobby — Shadow Clan HQ", 300, 32);
+  ctx.fillStyle = "#bbb";
+  ctx.font = "13px Arial";
+  ctx.fillText("Best Level " + bests.bestLevel + "  •  High Score " + bests.bestScore, 300, 52);
+
+  // player ninja
+  drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim, { belt:"#1f3d80" });
+
+  ctx.textAlign = "start";
+}
+
+function drawCombat(){
+  drawWorldBg(dojo.width, dojo.height);
+
+  // 🌿 bushes (under everything else, on the ground)
+  bushes.forEach(b=>drawBush(b));
+
+  // 🏚️ buildings (drawn before crates/chests so contents render on top)
+  buildings.forEach(b=>drawBuilding(b));
+
+  // ⚡ Falling airdrop crates with parachutes (rendered behind landed loot)
+  airdrops.forEach(a=>drawAirdrop(a));
+
+  // gun crates: wooden box with gun resting on top + label, prompt when near
+  crates.forEach(c=>{
+    const x = c.x - cam.x, y = c.y - cam.y;
+    // wooden crate base
+    ctx.fillStyle = "#8b5a2b";
+    ctx.fillRect(x, y + c.size*0.45, c.size, c.size*0.55);
+    ctx.strokeStyle = "#5e3a14";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x+0.5, y + c.size*0.45 + 0.5, c.size-1, c.size*0.55 - 1);
+    // wood planks
+    ctx.beginPath();
+    ctx.moveTo(x + c.size/3, y + c.size*0.45);
+    ctx.lineTo(x + c.size/3, y + c.size);
+    ctx.moveTo(x + 2*c.size/3, y + c.size*0.45);
+    ctx.lineTo(x + 2*c.size/3, y + c.size);
+    ctx.stroke();
+    // rarity glow halo behind crate
+    const gs = GUN_STATS[c.gun];
+    const rarKey = gs && gs.rarity;
+    const rarCol = (rarKey && RARITY[rarKey]) ? RARITY[rarKey].color : "#bbb";
+    ctx.fillStyle = rarCol + "33"; // ~20% alpha hex
+    ctx.beginPath();
+    ctx.arc(x + c.size/2, y + c.size/2, c.size*0.85, 0, Math.PI*2);
+    ctx.fill();
+    // recolor crate border to rarity
+    ctx.strokeStyle = rarCol;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x+0.5, y + c.size*0.45 + 0.5, c.size-1, c.size*0.55 - 1);
+    // gun icon on top
+    drawGunIcon(c.gun, x + c.size/2, y + c.size*0.30, 18, 0);
+    // label (rarity-colored) + small rarity tag
+    ctx.fillStyle = rarCol;
+    ctx.font = "bold 10px Arial";
+    ctx.textAlign = "center";
+    const lbl = (gs && gs.label) || c.gun;
+    ctx.fillText(lbl, x + c.size/2, y + c.size + 11);
+    ctx.fillStyle = rarCol;
+    ctx.font = "bold 8px Arial";
+    const rarTag = (rarKey ? RARITY[rarKey].label : "").toUpperCase()
+                 + (c.airdrop ? " ⚡ AIRDROP" : "");
+    ctx.fillText(rarTag, x + c.size/2, y + c.size + 21);
+    // proximity prompt
+    const px = player.x + player.size/2, py = player.y + player.size/2;
+    const cx = c.x + c.size/2, cy = c.y + c.size/2;
+    if (Math.hypot(px - cx, py - cy) < 60) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(x + c.size/2 - 28, y - 22, 56, 16);
+      ctx.fillStyle = "#ffd24a";
+      ctx.fillText("press E", x + c.size/2, y - 10);
+    }
+    ctx.textAlign = "start";
+  });
+
+  // gold chests
+  goldChests.forEach(g=>{
+    const x = g.x - cam.x, y = g.y - cam.y;
+    const glow = 0.5 + 0.5*Math.sin(g.pulse);
+    // glow
+    ctx.fillStyle = "rgba(255,210,74," + (0.15 + 0.25*glow) + ")";
+    ctx.beginPath();
+    ctx.arc(x+g.size/2, y+g.size/2, g.size*0.9, 0, Math.PI*2);
+    ctx.fill();
+    // chest body
+    ctx.fillStyle = "#ffd24a";
+    ctx.fillRect(x, y+g.size*0.35, g.size, g.size*0.65);
+    // lid
+    ctx.fillStyle = "#f1b500";
+    ctx.beginPath();
+    ctx.moveTo(x, y+g.size*0.4);
+    ctx.quadraticCurveTo(x+g.size/2, y - g.size*0.05, x+g.size, y+g.size*0.4);
+    ctx.closePath();
+    ctx.fill();
+    // lock
+    ctx.fillStyle = "#5e3a14";
+    ctx.fillRect(x+g.size*0.42, y+g.size*0.45, g.size*0.16, g.size*0.18);
+    // straps
+    ctx.fillStyle = "#5e3a14";
+    ctx.fillRect(x+g.size*0.05, y+g.size*0.4, g.size*0.06, g.size*0.6);
+    ctx.fillRect(x+g.size*0.89, y+g.size*0.4, g.size*0.06, g.size*0.6);
+  });
+
+  // ammo
+  ammoBoxes.forEach(a=>{
+    const x = a.x - cam.x, y = a.y - cam.y;
+    ctx.fillStyle = "#3ec1d5";
+    ctx.fillRect(x, y, a.size, a.size);
+    ctx.fillStyle = "#0e0f12";
+    ctx.font = "bold 12px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("A", x + a.size/2, y + a.size*0.72);
+    ctx.textAlign = "start";
+  });
+
+  // health packs (red cross box)
+  healthPacks.forEach(h=>{
+    const x = h.x - cam.x, y = h.y - cam.y;
+    const glow = 0.5 + 0.5*Math.sin(h.pulse || 0);
+    ctx.fillStyle = "rgba(124,252,0," + (0.10 + 0.20*glow) + ")";
+    ctx.beginPath();
+    ctx.arc(x+h.size/2, y+h.size/2, h.size*0.85, 0, Math.PI*2);
+    ctx.fill();
+    // box
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(x, y, h.size, h.size);
+    ctx.strokeStyle = "#aaa";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x+0.5, y+0.5, h.size-1, h.size-1);
+    // red cross
+    ctx.fillStyle = "#e23b3b";
+    const t = h.size * 0.22;
+    ctx.fillRect(x + h.size/2 - t/2, y + 3, t, h.size - 6);
+    ctx.fillRect(x + 3, y + h.size/2 - t/2, h.size - 6, t);
+  });
+
+  // enemies (red ninjas, hold their own gun, with HP bar above)
+  enemies.forEach(e=>{
+    drawNinja(e.x, e.y, e.size, "#c0392b", e.aim || 0,
+              { belt:"#7a1d12", gunKind: e.gun || "pistol" });
+    // HP bar
+    const sx = e.x - cam.x, sy = e.y - cam.y;
+    const bw = 36, bh = 4;
+    const bx = sx + e.size/2 - bw/2;
+    const by = sy - 12;
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(bx-1, by-1, bw+2, bh+2);
+    ctx.fillStyle = "#3a0d0d";
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = "#ff6b6b";
+    ctx.fillRect(bx, by, bw * Math.max(0, e.hp / e.maxHp), bh);
+    // gun label + level marker
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 9px Arial";
+    ctx.textAlign = "center";
+    const label = (GUN_STATS[e.gun] && GUN_STATS[e.gun].label) || "Pistol";
+    ctx.fillText("Lv " + level + " — " + label, sx + e.size/2, by - 3);
+    ctx.textAlign = "start";
+  });
+
+  // bullets (per-kind rendering)
+  bullets.forEach(b=>{
+    drawBullet(b);
+  });
+  // bot bullets
+  enemyBullets.forEach(b=>{
+    drawBullet(b);
+  });
+
+  // explosions
+  explosions.forEach(ex=>{
+    const a = Math.max(0, ex.life / ex.max);
+    const r = ex.r * (1 - a*0.4);
+    ctx.fillStyle = "rgba(255,140,40," + (0.55*a) + ")";
+    ctx.beginPath();
+    ctx.arc(ex.x - cam.x, ex.y - cam.y, r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,230,160," + (0.6*a) + ")";
+    ctx.beginPath();
+    ctx.arc(ex.x - cam.x, ex.y - cam.y, r*0.6, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  // player ninja (flicker on i-frames) — gun follows active slot
+  if (!(player.inv > 0 && (player.inv % 8 < 4))) {
+    const ag = activeEntry();
+    drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim,
+              { belt:"#1f3d80", gunKind: ag ? ag.gun : null });
+  }
+
+  // floating pickup text
+  pickups.forEach(p=>{
+    ctx.fillStyle = p.color;
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(p.text, p.x - cam.x + 15, p.y - cam.y);
+  });
+  ctx.textAlign = "start";
+
+  // mini upgrade strip + inventory bar
+  drawUpgradeStrip();
+  drawInventoryBar();
+
+  // GAME OVER overlay
+  if(scene === "gameover"){
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(0,0,600,450);
+    ctx.fillStyle = "white";
+    ctx.textAlign = "center";
+    ctx.font = "44px Arial";
+    ctx.fillText("YOU FELL", 300, 190);
+    ctx.font = "18px Arial";
+    ctx.fillText("Level reached: " + level + "   Score: " + score, 300, 230);
+    ctx.fillStyle = "#ffd24a";
+    ctx.fillText("Best Level: " + bests.bestLevel + "   High Score: " + bests.bestScore, 300, 256);
+    if (savedNewRecord) {
+      ctx.fillStyle = "#7CFC00";
+      ctx.font = "20px Arial";
+      ctx.fillText("New Record!", 300, 290);
+    }
+    ctx.fillStyle = "#bbb";
+    ctx.font = "13px Arial";
+    ctx.fillText("Returning to lobby...", 300, 320);
+    ctx.textAlign = "start";
+  }
+}
+
+function drawUpgradeStrip(){
+  const g = activeGun() || GUN_STATS.pistol;
+  const gunName = activeEntry() ? activeEntry().gun : "pistol";
+  const dmgShown = gunName === "sniper" ? "1HK" : (g.dmg + player.damageBonus);
+  const items = [
+    ["DMG",  dmgShown],
+    ["RATE", "+" + player.fireRateLevel],
+    ["SPD",  "+" + player.bulletSpeedBonus],
+    ["MULT", 1 + player.multishot],
+    ["HP",   player.maxHp]
+  ];
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(8, 8, 195, 22);
+  ctx.font = "12px Arial";
+  ctx.fillStyle = "#ffd24a";
+  let x = 14;
+  items.forEach(([k,v])=>{
+    ctx.fillText(k + ":" + v, x, 24);
+    x += 38;
+  });
+
+  // HP bar (top right of canvas)
+  const barW = 160, barH = 12;
+  const bx = 600 - barW - 12, by = 12;
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(bx-2, by-2, barW+4, barH+4);
+  ctx.fillStyle = "#3a3a3a";
+  ctx.fillRect(bx, by, barW, barH);
+  const pct = Math.max(0, player.hp) / player.maxHp;
+  ctx.fillStyle = pct > 0.5 ? "#7CFC00" : (pct > 0.25 ? "#ffb84a" : "#e23b3b");
+  ctx.fillRect(bx, by, barW * pct, barH);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 11px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(Math.max(0, player.hp) + " / " + player.maxHp + "  HP", bx + barW/2, by + 10);
+  ctx.textAlign = "start";
+}
+
+// 📊 HUD
+const hud = {
+  lvl: document.getElementById("lvl"),
+  score: document.getElementById("score"),
+  hp: document.getElementById("hp"),
+  ammo: document.getElementById("ammo"),
+  gun: document.getElementById("gun"),
+  bestLvl: document.getElementById("bestLvl"),
+  bestScore: document.getElementById("bestScore")
+};
+function updateHud(){
+  hud.lvl.textContent = scene === "lobby" ? "lobby" : level;
+  hud.score.textContent = score;
+  hud.hp.textContent = Math.max(0, player.hp) + " / " + player.maxHp;
+  const e = activeEntry();
+  if (e) {
+    const g = GUN_STATS[e.gun];
+    hud.ammo.textContent = e.ammo + " / " + (g.maxAmmo || "∞");
+    hud.gun.textContent = g.label || e.gun;
+  } else {
+    hud.ammo.textContent = "—";
+    hud.gun.textContent = "(empty)";
+  }
+  hud.bestLvl.textContent = bests.bestLevel;
+  hud.bestScore.textContent = bests.bestScore;
+}
+
+// LOOP
+function loop(){
+  update();
+  draw();
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+// START
+enterLobby();
+loop();
+</script>
+
+</body>
+</html>

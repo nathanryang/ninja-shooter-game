@@ -49,6 +49,7 @@
   <span>HP: <b id="hp">5</b></span>
   <span>Ammo: <b id="ammo">0</b></span>
   <span class="gold">Gun: <b id="gun">pistol</b></span>
+  <span style="color:#7ad3ff">Armor: <b id="armor">None</b></span>
   <span class="best">Best Level: <b id="bestLvl">1</b></span>
   <span class="best">High Score: <b id="bestScore">0</b></span>
 </div>
@@ -58,7 +59,7 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
 // 🌍 WORLDS
-const dojo  = {width:1600, height:1200};         // combat arena
+const dojo  = {width:2600, height:2000};         // combat arena
 const lobby = {width:800,  height:600};          // safe hub
 
 // 🎥 CAMERA
@@ -75,14 +76,15 @@ const STORAGE_KEY = "lootShooterBests_v1";
 function loadBests() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { bestLevel: 1, bestScore: 0 };
+    if (!raw) return { bestLevel: 1, bestScore: 0, armorTier: 0 };
     const v = JSON.parse(raw);
     return {
       bestLevel: Number.isFinite(v.bestLevel) ? v.bestLevel : 1,
-      bestScore: Number.isFinite(v.bestScore) ? v.bestScore : 0
+      bestScore: Number.isFinite(v.bestScore) ? v.bestScore : 0,
+      armorTier: Number.isFinite(v.armorTier) ? v.armorTier : 0
     };
   } catch (e) {
-    return { bestLevel: 1, bestScore: 0 };
+    return { bestLevel: 1, bestScore: 0, armorTier: 0 };
   }
 }
 function saveBests() {
@@ -90,6 +92,36 @@ function saveBests() {
   catch (e) { /* ignore */ }
 }
 let bests = loadBests();
+
+// 🛡️ ARMOR SETS (helmet + suit). Tier N unlocks at best level N*10.
+// dr = total damage reduction (0..1). Cap so the player can still die.
+const ARMOR_SETS = [
+  { tier:0,  name:"None",          dr:0.00, color:null,        trim:null,        unlock:0   },
+  { tier:1,  name:"Cloth Wraps",   dr:0.08, color:"#c9bfa6",  trim:"#8a7e60",   unlock:10  },
+  { tier:2,  name:"Leather Hide",  dr:0.16, color:"#8a5a32",  trim:"#5a3a1a",   unlock:20  },
+  { tier:3,  name:"Iron Plate",    dr:0.24, color:"#9aa3ad",  trim:"#5a626b",   unlock:30  },
+  { tier:4,  name:"Steel Guard",   dr:0.32, color:"#c0c8d0",  trim:"#6b7480",   unlock:40  },
+  { tier:5,  name:"Mythril Mesh",  dr:0.40, color:"#8ad8c8",  trim:"#3a8a78",   unlock:50  },
+  { tier:6,  name:"Dragonscale",   dr:0.48, color:"#d24a3a",  trim:"#7a1a10",   unlock:60  },
+  { tier:7,  name:"Obsidian Mail", dr:0.55, color:"#3a2a4a",  trim:"#1a0a2a",   unlock:70  },
+  { tier:8,  name:"Shadow Cloak",  dr:0.62, color:"#1a1a22",  trim:"#5a3a8a",   unlock:80  },
+  { tier:9,  name:"Celestial Aegis",dr:0.70,color:"#e8e0a8",  trim:"#c8a838",   unlock:90  },
+  { tier:10, name:"Ninja King",    dr:0.78, color:"#ffd24a",  trim:"#3a2a00",   unlock:100 }
+];
+function currentArmor(){ return ARMOR_SETS[Math.max(0, Math.min(ARMOR_SETS.length-1, bests.armorTier|0))]; }
+function applyDamage(raw){
+  const a = currentArmor();
+  const reduced = Math.max(0, Math.round(raw * (1 - a.dr)));
+  // ensure any non-zero hit deals at least 1 (so endgame armor isn't invincible)
+  const dmg = (raw > 0 && reduced === 0) ? 1 : reduced;
+  player.hp -= dmg;
+  return dmg;
+}
+
+// 🏪 SHOP STATE
+let shopOpen = false;
+let shopHover = -1;
+const shop = { x: 560, y: 380, w: 80, h: 70 }; // visible to the right of the lobby spawn
 
 // 🥷 PLAYER
 let player;
@@ -114,7 +146,7 @@ function levelStats(lv){
   const t = Math.min(1, Math.max(0, (lv - 1) / 99));
   return {
     hp:           Math.round(30 + t * 3970),  // 30 → 4000
-    speed:        0.5 + t * 4.0,              // 0.5 → 4.5
+    speed:        0.9 + t * 5.6,              // 0.9 → 6.5 (matches player base speed)
     cooldownMult: 2.5 - t * 2.2,              // 2.5x → 0.3x base gun cooldown
     dmgMult:      0.25 + t * 1.55,            // 0.25x → 1.8x base gun damage
     spread:       0.55 - t * 0.53,            // 0.55 rad → 0.02 rad random aim wobble
@@ -124,11 +156,11 @@ function levelStats(lv){
 
 // 🌈 RARITY system — colors and weighted drop chances
 const RARITY = {
-  common:    { label:"Common",    color:"#bdbdbd", weight:55 },
-  uncommon:  { label:"Uncommon",  color:"#5dd16f", weight:25 },
-  rare:      { label:"Rare",      color:"#4aa3ff", weight:13 },
-  legendary: { label:"Legendary", color:"#c66bff", weight:5  },
-  mythic:    { label:"Mythic",    color:"#ff4d4d", weight:2  }
+  common:    { label:"Common",    color:"#bdbdbd", weight:200 },
+  uncommon:  { label:"Uncommon",  color:"#5dd16f", weight:60  },
+  rare:      { label:"Rare",      color:"#4aa3ff", weight:12  },
+  legendary: { label:"Legendary", color:"#c66bff", weight:2   },
+  mythic:    { label:"Mythic",    color:"#ff4d4d", weight:0.4 }
 };
 const RARITY_ORDER = ["common","uncommon","rare","legendary","mythic"];
 
@@ -140,28 +172,44 @@ const GUN_STATS = {
   smg:         { label:"SMG",           rarity:"common",    dmg:10,  cooldown:3,  bullets:1, spread:0.10, speed:10, range:480, maxAmmo:60,  color:"#ffd24a", kind:"round"  },
   revolver:    { label:"Revolver",      rarity:"common",    dmg:32,  cooldown:18, bullets:1, spread:0.02, speed:11, range:620, maxAmmo:18,  color:"#dddddd", kind:"round"  },
   pumpgun:     { label:"Pump Shotgun",  rarity:"common",    dmg:30,  cooldown:32, bullets:6, spread:0.28, speed:9,  range:160, maxAmmo:14,  color:"#e89030", kind:"pellet" },
+  derringer:   { label:"Derringer",     rarity:"common",    dmg:24,  cooldown:14, bullets:1, spread:0.04, speed:10, range:380, maxAmmo:12,  color:"#c9a66b", kind:"round"  },
+  sawnoff:     { label:"Sawn-Off",      rarity:"common",    dmg:22,  cooldown:28, bullets:5, spread:0.36, speed:8,  range:140, maxAmmo:12,  color:"#b87333", kind:"pellet" },
+  machpistol:  { label:"Machine Pistol",rarity:"common",    dmg:8,   cooldown:2,  bullets:1, spread:0.16, speed:10, range:380, maxAmmo:50,  color:"#e0c060", kind:"round"  },
   // ── UNCOMMON ───────────────────────────────────────────────────────
   shotgun:     { label:"Shotgun",       rarity:"uncommon",  dmg:32,  cooldown:24, bullets:7, spread:0.22, speed:9,  range:180, maxAmmo:18,  color:"#ff9a3c", kind:"pellet" },
   carbine:     { label:"Carbine",       rarity:"uncommon",  dmg:24,  cooldown:10, bullets:1, spread:0.05, speed:13, range:720, maxAmmo:24,  color:"#ffd07a", kind:"round"  },
   doublepistol:{ label:"Akimbo Pistols",rarity:"uncommon",  dmg:14,  cooldown:5,  bullets:2, spread:0.05, speed:9,  range:500, maxAmmo:60,  color:"#ffe066", kind:"round"  },
+  leveraction: { label:"Lever Action",  rarity:"uncommon",  dmg:42,  cooldown:22, bullets:1, spread:0.02, speed:13, range:780, maxAmmo:14,  color:"#a8732e", kind:"round"  },
+  tacsmg:      { label:"Tactical SMG",  rarity:"uncommon",  dmg:12,  cooldown:3,  bullets:1, spread:0.06, speed:11, range:540, maxAmmo:48,  color:"#7fd1ff", kind:"round"  },
+  nailgun:     { label:"Nailgun",       rarity:"uncommon",  dmg:11,  cooldown:4,  bullets:1, spread:0.02, speed:15, range:520, maxAmmo:60,  color:"#cccccc", kind:"bolt"   },
   // ── RARE ───────────────────────────────────────────────────────────
   ar15:        { label:"AR-15",         rarity:"rare",      dmg:34,  cooldown:6,  bullets:1, spread:0.04, speed:14, range:900, maxAmmo:30,  color:"#ffae33", kind:"round"  },
   crossbow:    { label:"Crossbow",      rarity:"rare",      dmg:65,  cooldown:32, bullets:1, spread:0,    speed:14, range:1100,maxAmmo:12,  color:"#a08060", kind:"bolt",   pierce:3 },
   burstrifle:  { label:"Burst Rifle",   rarity:"rare",      dmg:20,  cooldown:14, bullets:3, spread:0.04, speed:14, range:800, maxAmmo:30,  color:"#ffc04a", kind:"round"  },
   flak:        { label:"Flak Cannon",   rarity:"rare",      dmg:38,  cooldown:32, bullets:5, spread:0.30, speed:8,  range:220, maxAmmo:24,  color:"#b3ff66", kind:"pellet" },
+  scout:       { label:"Scout Rifle",   rarity:"rare",      dmg:90,  cooldown:38, bullets:1, spread:0,    speed:18, range:1100,maxAmmo:10,  color:"#7affd0", kind:"tracer" },
+  grenadelauncher:{ label:"Grenade Launcher",rarity:"rare", dmg:30,  cooldown:40, bullets:1, spread:0.02, speed:7,  range:520, maxAmmo:8,   color:"#9ad36b", kind:"rocket", aoe:70,  aoeDmg:35 },
+  doublebarrel:{ label:"Double Barrel", rarity:"rare",      dmg:36,  cooldown:30, bullets:8, spread:0.24, speed:9,  range:170, maxAmmo:12,  color:"#d4af37", kind:"pellet" },
   // ── LEGENDARY ──────────────────────────────────────────────────────
   minigun:     { label:"Minigun",       rarity:"legendary", dmg:6,   cooldown:2,  bullets:1, spread:0.14, speed:12, range:520, maxAmmo:200, color:"#ffe066", kind:"round"  },
   laser:       { label:"Laser",         rarity:"legendary", dmg:22,  cooldown:5,  bullets:1, spread:0,    speed:18, range:800, maxAmmo:50,  color:"#ff4ad1", kind:"beam"   },
   plasma:      { label:"Plasma Rifle",  rarity:"legendary", dmg:38,  cooldown:16, bullets:1, spread:0,    speed:12, range:700, maxAmmo:24,  color:"#7affd0", kind:"plasma", aoe:36, aoeDmg:18 },
   sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:90, bullets:1, spread:0,    speed:22, range:1400,maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4 },
+  autoshotgun: { label:"Auto Shotgun",  rarity:"legendary", dmg:18,  cooldown:8,  bullets:6, spread:0.22, speed:9,  range:200, maxAmmo:36,  color:"#ff7f50", kind:"pellet" },
+  flamer:      { label:"Flamethrower",  rarity:"legendary", dmg:9,   cooldown:1,  bullets:2, spread:0.18, speed:8,  range:240, maxAmmo:160, color:"#ff7733", kind:"plasma", aoe:14, aoeDmg:5 },
+  gauss:       { label:"Gauss Rifle",   rarity:"legendary", dmg:80,  cooldown:18, bullets:1, spread:0,    speed:20, range:1100,maxAmmo:16,  color:"#aaddff", kind:"tracer", pierce:2 },
   // ── MYTHIC ─────────────────────────────────────────────────────────
   rocket:      { label:"RPG",           rarity:"mythic",    dmg:55,  cooldown:55, bullets:1, spread:0,    speed:7,  range:900, maxAmmo:5,   color:"#ff5252", kind:"rocket", aoe:90,  aoeDmg:45  },
   railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:75, bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8 },
   bfg:         { label:"BFG-9000",      rarity:"mythic",    dmg:180, cooldown:110,bullets:1, spread:0,    speed:5,  range:700, maxAmmo:3,   color:"#aaff66", kind:"rocket", aoe:180, aoeDmg:160 },
   thunder:     { label:"Thunder Cannon",rarity:"mythic",    dmg:55,  cooldown:8,  bullets:1, spread:0.02, speed:24, range:900, maxAmmo:40,  color:"#dceaff", kind:"beam"   },
+  chaingun:    { label:"Chain Gun",     rarity:"mythic",    dmg:14,  cooldown:1,  bullets:1, spread:0.10, speed:14, range:700, maxAmmo:300, color:"#ffcc66", kind:"round"  },
+  ioncannon:   { label:"Ion Cannon",    rarity:"mythic",    dmg:140, cooldown:30, bullets:1, spread:0,    speed:16, range:1000,maxAmmo:14,  color:"#66ffff", kind:"plasma", aoe:60, aoeDmg:60 },
   // ⚡⚡ AIRDROP-ONLY god weapons (never appear in normal crates)
   masterbolt:  { label:"Master Bolt",   rarity:"mythic",    dmg:140, cooldown:7,  bullets:1, spread:0,    speed:30, range:1200,maxAmmo:40,  color:"#ffd24a", kind:"beam",   pierce:6, airdropOnly:true, lore:"Zeus's thunderbolt forged by Cyclopes" },
-  trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:60, bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" }
+  trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:60, bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" },
+  excalibur:   { label:"Excalibur",     rarity:"mythic",    dmg:200, cooldown:10, bullets:3, spread:0.04, speed:22, range:1000,maxAmmo:30,  color:"#ffffff", kind:"beam",   pierce:5, airdropOnly:true, lore:"The legendary sword of King Arthur, reforged as a triple-beam relic" },
+  gungnir:     { label:"Gungnir",       rarity:"mythic",    dmg:260, cooldown:14, bullets:1, spread:0,    speed:32, range:1600,maxAmmo:20,  color:"#9ad7ff", kind:"tracer", pierce:10, airdropOnly:true, lore:"Odin's spear — never misses its mark" }
 };
 const GUN_NAMES = Object.keys(GUN_STATS);
 const MAX_INVENTORY = 5;
@@ -238,20 +286,35 @@ canvas.addEventListener("mousedown", onMouseDown);
 canvas.addEventListener("mouseup",   onMouseUp);
 canvas.addEventListener("mouseleave",onMouseUp);
 
-// Press E to pick up nearby gun
+// Press E to pick up nearby gun / open shop, M to toggle the map
+let mapOpen = false;
 document.addEventListener("keydown", e=>{
-  if (e.key.toLowerCase() === "e") tryPickupNearby();
+  const k = e.key.toLowerCase();
+  if (k === "e") {
+    if (scene === "lobby" && (shopOpen || nearShop())) toggleShop();
+    else tryPickupNearby();
+  }
+  if (k === "escape" && shopOpen) shopOpen = false;
+  if (k === "m") mapOpen = !mapOpen;
   // hotkeys 1-5 to switch active slot
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= MAX_INVENTORY) selectSlot(n - 1);
 });
+
+function nearShop(){
+  if (scene !== "lobby") return false;
+  const pcx = player.x + player.size/2, pcy = player.y + player.size/2;
+  const scx = shop.x + shop.w/2,        scy = shop.y + shop.h/2;
+  return Math.hypot(pcx - scx, pcy - scy) < 70;
+}
+function toggleShop(){ shopOpen = !shopOpen; }
 
 // 🎮 PLAYER
 function resetPlayer(spawnX, spawnY){
   player = {
     x: spawnX, y: spawnY,
     size: 22,
-    speed: 4,
+    speed: 6.5,
     hp: 100,
     maxHp: 100,
     inv: 0,
@@ -300,43 +363,119 @@ function dropSlot(i){
 // 🌐 CURRENT WORLD HELPER
 function world() { return scene === "playing" ? dojo : lobby; }
 
-// 🏚️ BUILDING (rectangular hut with a door + loot inside)
-function spawnBuilding(x, y, w, h){
+// 🏯 BUILDING THEMES — each apartment picks one for distinct look + loot
+const BUILDING_THEMES = {
+  dojo:       { label:"Dojo",       wall:"#5e564a", floor:"#33271c", stripe:"rgba(140,100,60,0.15)",  accent:"#7a4d22", roof:null,       crates:3, gold:1, healthPack:0 },
+  shrine:     { label:"Shrine",     wall:"#a23b3b", floor:"#3a1d1d", stripe:"rgba(255,210,210,0.10)", accent:"#f5d76e", roof:"#f0e6d2",  crates:2, gold:2, healthPack:0 },
+  pagoda:     { label:"Pagoda",     wall:"#4a3520", floor:"#2a1d10", stripe:"rgba(220,180,140,0.10)", accent:"#c9a96b", roof:"#5b3a1c",  crates:3, gold:1, healthPack:0 },
+  watchtower: { label:"Watchtower", wall:"#454a55", floor:"#1d222a", stripe:"rgba(150,170,200,0.08)", accent:"#7d8da3", roof:"#2a2f38",  crates:2, gold:1, healthPack:0 },
+  armory:     { label:"Armory",     wall:"#3a4040", floor:"#222827", stripe:"rgba(180,200,220,0.06)", accent:"#88aaa0", roof:null,       crates:5, gold:0, healthPack:0 },
+  teahouse:   { label:"Teahouse",   wall:"#a8956b", floor:"#3a3322", stripe:"rgba(255,245,220,0.10)", accent:"#5a8a4a", roof:"#5a8a4a",  crates:2, gold:1, healthPack:1 },
+  bunker:     { label:"Bunker",     wall:"#3d3d3d", floor:"#1a1a1a", stripe:"rgba(255,200,100,0.05)", accent:"#ffd24a", roof:null,       crates:4, gold:1, healthPack:0 },
+  ruins:      { label:"Ruins",      wall:"#6b5e4f", floor:"#2a221c", stripe:"rgba(100,80,60,0.10)",   accent:"#46362a", roof:null,       crates:2, gold:1, healthPack:0, broken:true }
+};
+const BUILDING_THEME_KEYS = Object.keys(BUILDING_THEMES);
+function randomTheme(){ return BUILDING_THEME_KEYS[Math.floor(Math.random()*BUILDING_THEME_KEYS.length)]; }
+const DOOR_SIDES = ["south","north","east","west"];
+function randomDoorSide(){ return DOOR_SIDES[Math.floor(Math.random()*DOOR_SIDES.length)]; }
+
+// 🏚️ BUILDING (themed apartment with a door + loot inside)
+function spawnBuilding(x, y, w, h, opts){
+  opts = opts || {};
+  const themeKey = opts.theme || randomTheme();
+  const theme = BUILDING_THEMES[themeKey];
+  const doorSide = opts.doorSide || randomDoorSide();
   const t = 8;                      // wall thickness
   const doorW = 40;
-  const doorX = x + w/2 - doorW/2;  // centered on south wall
-  const b = {
-    x, y, w, h, doorW,
-    walls: [
-      { x: x,             y: y,         w: w,                       h: t }, // top
-      { x: x,             y: y+h-t,     w: doorX - x,               h: t }, // bottom-left
-      { x: doorX+doorW,   y: y+h-t,     w: (x+w) - (doorX+doorW),   h: t }, // bottom-right
-      { x: x,             y: y,         w: t,                       h: h }, // left
-      { x: x+w-t,         y: y,         w: t,                       h: h }  // right
-    ],
-    door: { x: doorX, y: y+h-t, w: doorW, h: t }
-  };
+
+  // Build walls + door rect according to which side the door is on.
+  let door, ws;
+  if (doorSide === "south") {
+    const dx = x + w/2 - doorW/2;
+    door = { x: dx, y: y+h-t, w: doorW, h: t, side:"south" };
+    ws = [
+      { x, y, w, h: t },                                            // top
+      { x, y: y+h-t, w: dx - x, h: t },                             // bottom-left
+      { x: dx+doorW, y: y+h-t, w: (x+w) - (dx+doorW), h: t },       // bottom-right
+      { x, y, w: t, h },                                            // left
+      { x: x+w-t, y, w: t, h }                                      // right
+    ];
+  } else if (doorSide === "north") {
+    const dx = x + w/2 - doorW/2;
+    door = { x: dx, y, w: doorW, h: t, side:"north" };
+    ws = [
+      { x, y, w: dx - x, h: t },                                    // top-left
+      { x: dx+doorW, y, w: (x+w) - (dx+doorW), h: t },              // top-right
+      { x, y: y+h-t, w, h: t },                                     // bottom
+      { x, y, w: t, h },                                            // left
+      { x: x+w-t, y, w: t, h }                                      // right
+    ];
+  } else if (doorSide === "east") {
+    const dy = y + h/2 - doorW/2;
+    door = { x: x+w-t, y: dy, w: t, h: doorW, side:"east" };
+    ws = [
+      { x, y, w, h: t },                                            // top
+      { x, y: y+h-t, w, h: t },                                     // bottom
+      { x, y, w: t, h },                                            // left
+      { x: x+w-t, y, w: t, h: dy - y },                             // right-top
+      { x: x+w-t, y: dy+doorW, w: t, h: (y+h) - (dy+doorW) }        // right-bottom
+    ];
+  } else { // west
+    const dy = y + h/2 - doorW/2;
+    door = { x, y: dy, w: t, h: doorW, side:"west" };
+    ws = [
+      { x, y, w, h: t },                                            // top
+      { x, y: y+h-t, w, h: t },                                     // bottom
+      { x: x+w-t, y, w: t, h },                                     // right
+      { x, y, w: t, h: dy - y },                                    // left-top
+      { x, y: dy+doorW, w: t, h: (y+h) - (dy+doorW) }               // left-bottom
+    ];
+  }
+
+  // Ruins theme: knock out one random wall segment for that derelict look.
+  if (theme.broken && ws.length > 2) {
+    ws.splice(Math.floor(Math.random() * ws.length), 1);
+  }
+
+  const b = { x, y, w, h, doorW, walls: ws, door, theme: themeKey };
   buildings.push(b);
   walls.push(...b.walls);
 
-  // loot inside — gold chest + 3 gun crates per apartment
+  // loot inside — varies by theme
   const cx = x + w/2, cy = y + h/2;
-  goldChests.push({
-    x: cx - 16, y: cy - 32,
-    size: 32, pulse: Math.random()*Math.PI*2
-  });
-  crates.push({
-    x: cx - 60, y: cy + 4, size: 32,
-    gun: randomGunByRarity()
-  });
-  crates.push({
-    x: cx + 28, y: cy + 4, size: 32,
-    gun: randomGunByRarity()
-  });
-  crates.push({
-    x: cx - 16, y: cy + 30, size: 32,
-    gun: randomGunByRarity()
-  });
+  const numCrates = theme.crates;
+  const numGold = theme.gold;
+  const numHP = theme.healthPack;
+
+  // gold chests, spaced along the top inner row
+  for (let i = 0; i < numGold; i++) {
+    const offset = (i - (numGold - 1) / 2) * 40;
+    goldChests.push({
+      x: cx + offset - 16, y: cy - 36,
+      size: 32, pulse: Math.random() * Math.PI * 2
+    });
+  }
+
+  // crates arranged in a circle around the center
+  for (let i = 0; i < numCrates; i++) {
+    const ang = (i / numCrates) * Math.PI * 2 + Math.PI / 4;
+    const r = Math.max(20, Math.min(w, h) / 3.5);
+    crates.push({
+      x: cx + Math.cos(ang) * r - 16,
+      y: cy + Math.sin(ang) * r + 4,
+      size: 32,
+      gun: randomGunByRarity()
+    });
+  }
+
+  // teahouse health pack
+  for (let i = 0; i < numHP; i++) {
+    healthPacks.push({
+      x: cx + 24, y: cy + 18,
+      size: 22, pulse: Math.random() * Math.PI * 2
+    });
+  }
+
   return b;
 }
 
@@ -369,12 +508,13 @@ function spawnLevel(){
   bushes = [];
   airdrops = [];
 
-  // 🏚️ Place 4 apartments (no overlap, not on player spawn) — try harder
+  // 🏚️ Place 12 apartments (no overlap, not on player spawn) — try harder
   const playerSafe = { x: 280, y: 280, w: 120, h: 120 };
   let attempts = 0;
-  while (buildings.length < 4 && attempts < 200){
+  while (buildings.length < 12 && attempts < 800){
     attempts++;
-    const w = 170, h = 150;
+    const w = 160 + Math.floor(Math.random()*80);   // 160–240
+    const h = 140 + Math.floor(Math.random()*70);   // 140–210
     const cand = {
       x: 200 + Math.random() * (dojo.width  - w - 260),
       y: 200 + Math.random() * (dojo.height - h - 260),
@@ -390,7 +530,7 @@ function spawnLevel(){
   }
 
   // 🌿 Bushes scattered around (not inside walls)
-  for (let i=0;i<14;i++){
+  for (let i=0;i<28;i++){
     const bx = 80 + Math.random()*(dojo.width - 160);
     const by = 80 + Math.random()*(dojo.height - 160);
     if (pointInAnyBuilding(bx, by, 12)) continue;
@@ -468,9 +608,8 @@ function spawnLevel(){
   }
 
   // ⚡ AIRDROP — falls from the sky carrying a god-tier mythic gun.
-  // 1 guaranteed every level, plus a small chance of a second one.
-  spawnAirdrop();
-  if (Math.random() < 0.20) spawnAirdrop();
+  // Only one drops every 5 levels (5, 10, 15, ...).
+  if (level % 5 === 0) spawnAirdrop();
 }
 
 // ⚡ Spawn an airdrop somewhere in the dojo (away from buildings).
@@ -514,6 +653,11 @@ function applyGoldUpgrade(){
 
 // 🖱️ MOUSE HANDLERS (split by region: inventory bar vs world)
 function onMouseDown(e){
+  // shop overlay intercepts clicks while open
+  if (shopOpen) {
+    handleShopClick(mouseScreen.x, mouseScreen.y);
+    return;
+  }
   // ignore clicks if we're on the inventory strip
   const slotIdx = slotAtScreen(mouseScreen.x, mouseScreen.y);
   if (slotIdx >= 0) {
@@ -526,6 +670,36 @@ function onMouseDown(e){
     return; // never fire when interacting with the bar
   }
   shoot();
+}
+
+// 🛍️ Shop UI — list rows down the panel; click a row to equip if unlocked.
+function shopPanelRect(){
+  const W = 460, H = 380;
+  return { x: (canvas.width - W) / 2, y: (canvas.height - H) / 2, w: W, h: H };
+}
+function shopRowRect(i){
+  const p = shopPanelRect();
+  const rowH = 28;
+  return { x: p.x + 16, y: p.y + 60 + i * rowH, w: p.w - 32, h: rowH - 4 };
+}
+function handleShopClick(mx, my){
+  const p = shopPanelRect();
+  // close button (X)
+  if (mx >= p.x + p.w - 30 && mx <= p.x + p.w - 6 &&
+      my >= p.y + 6        && my <= p.y + 30) {
+    shopOpen = false; return;
+  }
+  for (let i = 0; i < ARMOR_SETS.length; i++) {
+    const r = shopRowRect(i);
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+      const set = ARMOR_SETS[i];
+      if (bests.bestLevel >= set.unlock) {
+        bests.armorTier = i;
+        saveBests();
+      }
+      return;
+    }
+  }
 }
 function onMouseUp(e){
   if (dragSlot !== null) {
@@ -629,6 +803,12 @@ function hit(a,b){
 
 // 🚶 MOVE
 function move(){
+  // freeze player while browsing the shop
+  if (shopOpen) {
+    player.aim = Math.atan2(mouse.y - (player.y+player.size/2),
+                            mouse.x - (player.x+player.size/2));
+    return;
+  }
   if(keys["w"] || keys["arrowup"])    player.y -= player.speed;
   if(keys["s"] || keys["arrowdown"])  player.y += player.speed;
   if(keys["a"] || keys["arrowleft"])  player.x -= player.speed;
@@ -707,7 +887,7 @@ function enemyAI(e){
 
   // contact damage if the bot rams the player
   if (hit(player, e) && player.inv <= 0) {
-    player.hp -= 8;
+    applyDamage(8);
     player.inv = 40;
   }
 }
@@ -757,7 +937,7 @@ function explodeEnemyBullet(b){
   const d   = Math.hypot(pcx - b.x, pcy - b.y);
   if (d < r && player.inv <= 0) {
     const falloff = 1 - (d / r) * 0.5;
-    player.hp -= Math.round(b.aoeDmg * falloff);
+    applyDamage(Math.round(b.aoeDmg * falloff));
     player.inv = 30;
   }
   explosions.push({ x:b.x, y:b.y, r:r, life:18, max:18 });
@@ -952,7 +1132,7 @@ function update(){
       if (b.aoe) {
         explodeEnemyBullet(b);
       } else if (player.inv <= 0) {
-        player.hp -= b.dmg;
+        applyDamage(b.dmg);
         player.inv = 30;
       }
       b.dead = true;
@@ -1083,6 +1263,17 @@ function drawNinja(x, y, size, color, aim, opts){
   ctx.ellipse(0, 0.05*s, s*0.42, s*0.55, 0, 0, Math.PI*2);
   ctx.fill();
 
+  // 🛡️ armor SUIT plate (chestpiece) — drawn over the body when equipped
+  if (opts.armorColor) {
+    ctx.fillStyle = opts.armorColor;
+    ctx.beginPath();
+    ctx.ellipse(0, -0.02*s, s*0.34, s*0.36, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = opts.armorTrim || "#000";
+    ctx.lineWidth = Math.max(1, s*0.04);
+    ctx.stroke();
+  }
+
   // belt
   ctx.fillStyle = opts.belt || "#c0392b";
   ctx.fillRect(-s*0.42, s*0.0, s*0.84, s*0.12);
@@ -1096,6 +1287,20 @@ function drawNinja(x, y, size, color, aim, opts){
   // mask band over eyes
   ctx.fillStyle = color;
   ctx.fillRect(-s*0.30, -s*0.55, s*0.60, s*0.18);
+
+  // 🪖 armor HELMET — colored cap above the head
+  if (opts.armorColor) {
+    ctx.fillStyle = opts.armorColor;
+    ctx.beginPath();
+    ctx.arc(0, -s*0.50, s*0.30, Math.PI, 0);
+    ctx.fill();
+    ctx.strokeStyle = opts.armorTrim || "#000";
+    ctx.lineWidth = Math.max(1, s*0.04);
+    ctx.stroke();
+    // chin strap
+    ctx.fillStyle = opts.armorTrim || "#000";
+    ctx.fillRect(-s*0.30, -s*0.50, s*0.60, s*0.04);
+  }
 
   // eyes
   ctx.fillStyle = "#fff";
@@ -1313,7 +1518,7 @@ function explodeBullet(b){
   const pd  = Math.hypot(pcx - b.x, pcy - b.y);
   if (pd < r && player.inv <= 0) {
     const falloff = 1 - (pd / r) * 0.5;
-    player.hp -= Math.round(dmg * falloff);
+    applyDamage(Math.round(dmg * falloff));
     player.inv = 25;
     pushPickup(pcx, pcy - 16, "Self-damage!", "#ff6b6b");
   }
@@ -1517,9 +1722,156 @@ function draw(){
     drawLobby();
   } else {
     drawCombat();
+    if (mapOpen) drawMinimap();
+    else         drawMapHint();
   }
 
+  if (shopOpen) drawShopOverlay();
   drawCrosshair();
+}
+
+// Tiny corner hint reminding the player how to open the map.
+function drawMapHint(){
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(600 - 92, 6, 86, 18);
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(600 - 92 + 0.5, 6.5, 85, 17);
+  ctx.fillStyle = "#ffd24a";
+  ctx.font = "bold 11px Arial";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🗺️ M  Map", 600 - 86, 16);
+}
+
+// 🗺️ MINIMAP — large centered overlay opened/closed with M.
+function drawMinimap(){
+  // size: as big as fits in the canvas with some padding
+  const pad = 24;
+  const maxW = 600 - pad*2;
+  const maxH = 450 - pad*2;
+  const ratio = dojo.width / dojo.height;
+  let mw = maxW, mh = mw / ratio;
+  if (mh > maxH) { mh = maxH; mw = mh * ratio; }
+  const mx = (600 - mw) / 2;
+  const my = (450 - mh) / 2;
+  const sx = mw / dojo.width;   // world → minimap scale X
+  const sy = mh / dojo.height;  // world → minimap scale Y
+
+  // background
+  ctx.fillStyle = "rgba(10,12,16,0.78)";
+  ctx.fillRect(mx, my, mw, mh);
+  // border
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+
+  // current camera viewport rectangle
+  const vx = mx + cam.x * sx;
+  const vy = my + cam.y * sy;
+  const vw = 600 * sx;
+  const vh = 450 * sy;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(vx, vy, vw, vh);
+
+  // buildings (apartments) — dark filled rects
+  ctx.fillStyle = "#3a3f48";
+  ctx.strokeStyle = "#7a8290";
+  ctx.lineWidth = 0.8;
+  for (const b of buildings) {
+    const bx = mx + b.x * sx, by = my + b.y * sy;
+    const bw = b.w * sx,      bh = b.h * sy;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  }
+
+  // helper: small marker
+  function dot(wx, wy, color, r){
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(mx + wx * sx, my + wy * sy, r, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // ammo boxes (cyan)
+  for (const a of ammoBoxes) dot(a.x + a.size/2, a.y + a.size/2, "#5cc8ff", 3);
+  // health packs (pink)
+  for (const h of healthPacks) dot(h.x + h.size/2, h.y + h.size/2, "#ff6fae", 3.5);
+  // crates (white)
+  for (const c of crates) dot(c.x + c.size/2, c.y + c.size/2, "#ffffff", 3);
+  // gold chests (gold)
+  for (const g of goldChests) dot(g.x + g.size/2, g.y + g.size/2, "#ffd24a", 4);
+
+  // airdrops — pulsing yellow lightning marker
+  for (const a of airdrops) {
+    const ax = mx + a.x * sx, ay = my + a.y * sy;
+    const pulse = 1 + 0.4 * Math.sin(Date.now()/180);
+    ctx.fillStyle = "rgba(255,210,74,0.35)";
+    ctx.beginPath();
+    ctx.arc(ax, ay, 14 * pulse, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = "#ffd24a";
+    ctx.font = "bold 18px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⚡", ax, ay);
+  }
+
+  // bot enemies (red)
+  for (const e of enemies) {
+    const ex = mx + (e.x + e.size/2) * sx;
+    const ey = my + (e.y + e.size/2) * sy;
+    // outer halo for visibility
+    ctx.fillStyle = "rgba(255,80,80,0.35)";
+    ctx.beginPath();
+    ctx.arc(ex, ey, 9, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = "#ff4d4d";
+    ctx.beginPath();
+    ctx.arc(ex, ey, 5, 0, Math.PI*2);
+    ctx.fill();
+    // "BOT" label
+    ctx.fillStyle = "#ffdcdc";
+    ctx.font = "bold 9px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("BOT", ex, ey - 8);
+  }
+
+  // player (green) with facing arrow
+  if (player) {
+    const px = mx + (player.x + player.size/2) * sx;
+    const py = my + (player.y + player.size/2) * sy;
+    ctx.fillStyle = "#5dd16f";
+    ctx.beginPath();
+    ctx.arc(px, py, 5.5, 0, Math.PI*2);
+    ctx.fill();
+    // facing line
+    ctx.strokeStyle = "#5dd16f";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px + Math.cos(player.aim) * 14, py + Math.sin(player.aim) * 14);
+    ctx.stroke();
+    // "YOU" label
+    ctx.fillStyle = "#d8ffd8";
+    ctx.font = "bold 9px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("YOU", px, py - 9);
+  }
+
+  // title + close hint
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.font = "bold 13px Arial";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("🗺️ Dojo Map", mx + 8, my + 16);
+  ctx.fillStyle = "rgba(255,210,74,0.95)";
+  ctx.font = "bold 11px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText("Press M to close", mx + mw - 8, my + 16);
 }
 
 function drawCrosshair(){
@@ -1653,44 +2005,59 @@ function drawAirdrop(a){
 // 🏚️ BUILDING (stone walls + door gap + dim interior)
 function drawBuilding(b){
   const x = b.x - cam.x, y = b.y - cam.y;
+  const theme = BUILDING_THEMES[b.theme] || BUILDING_THEMES.dojo;
 
-  // interior floor (slightly darker than ground)
-  ctx.fillStyle = "#33271c";
+  // interior floor (themed)
+  ctx.fillStyle = theme.floor;
   ctx.fillRect(x + 4, y + 4, b.w - 8, b.h - 8);
-  // tatami stripes
-  ctx.fillStyle = "rgba(140,100,60,0.15)";
+  // floor stripes (tatami / tile / cracked-stone effect)
+  ctx.fillStyle = theme.stripe;
   for (let i = 0; i < 5; i++) {
     ctx.fillRect(x + 8, y + 12 + i * ((b.h - 24) / 5), b.w - 16, 4);
   }
 
-  // stone walls
+  // optional roof trim (shrine, pagoda, watchtower, teahouse)
+  if (theme.roof) {
+    ctx.fillStyle = theme.roof;
+    ctx.fillRect(x - 5, y - 7, b.w + 10, 7);
+    // small ridge cap
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(x - 5, y - 2, b.w + 10, 2);
+  }
+
+  // walls — themed color
   for (const w of b.walls) {
     const wx = w.x - cam.x, wy = w.y - cam.y;
-    ctx.fillStyle = "#5e564a";
+    ctx.fillStyle = theme.wall;
     ctx.fillRect(wx, wy, w.w, w.h);
     ctx.strokeStyle = "#1a1a1a";
     ctx.lineWidth = 1;
     ctx.strokeRect(wx + 0.5, wy + 0.5, w.w - 1, w.h - 1);
-    // brick highlight
+    // top highlight
     ctx.fillStyle = "rgba(255,255,255,0.06)";
     ctx.fillRect(wx, wy, w.w, Math.max(1, w.h * 0.25));
   }
 
-  // door frame (wooden brown around the gap)
+  // door frame + dark opening (orientation depends on side)
   const d = b.door;
   const dx = d.x - cam.x, dy = d.y - cam.y;
-  ctx.fillStyle = "#7a4d22";
-  ctx.fillRect(dx - 3, dy - 10, 3, 14);
-  ctx.fillRect(dx + d.w, dy - 10, 3, 14);
-  ctx.fillRect(dx - 3, dy - 12, d.w + 6, 3);
+  ctx.fillStyle = theme.accent;
+  if (d.side === "south" || d.side === "north") {
+    ctx.fillRect(dx - 3, dy - 2, 3, d.h + 4);
+    ctx.fillRect(dx + d.w, dy - 2, 3, d.h + 4);
+  } else {
+    ctx.fillRect(dx - 2, dy - 3, d.w + 4, 3);
+    ctx.fillRect(dx - 2, dy + d.h, d.w + 4, 3);
+  }
   // dark doorway opening
   ctx.fillStyle = "#1a120a";
-  ctx.fillRect(dx, dy - 10, d.w, 10);
-  // doorway hint text on first reveal
-  ctx.fillStyle = "rgba(255,210,74,0.55)";
-  ctx.font = "9px Arial";
+  ctx.fillRect(dx, dy, d.w, d.h);
+
+  // building name floating just above the structure
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.font = "bold 9px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("door", dx + d.w/2, dy + 11);
+  ctx.fillText(theme.label, x + b.w/2, y - (theme.roof ? 12 : 4));
   ctx.textAlign = "start";
 }
 
@@ -1707,6 +2074,9 @@ function drawLobby(){
   // training dummies (decoration)
   drawNinja(140, 200, 26, "#555",  Math.PI/2, { belt:"#888" });
   drawNinja(lobby.width-160, 200, 26, "#555", Math.PI/2, { belt:"#888" });
+
+  // 🏪 ARMOR SHOP (small shrine-style hut)
+  drawShopBuilding();
 
   // portal
   const px = portal.x - cam.x, py = portal.y - cam.y;
@@ -1746,10 +2116,145 @@ function drawLobby(){
   ctx.font = "13px Arial";
   ctx.fillText("Best Level " + bests.bestLevel + "  •  High Score " + bests.bestScore, 300, 52);
 
-  // player ninja
-  drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim, { belt:"#1f3d80" });
+  // player ninja (with equipped armor visualized)
+  const ar = currentArmor();
+  drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim,
+            { belt:"#1f3d80", armorColor: ar.color, armorTrim: ar.trim });
+
+  // "[E] Shop" prompt when standing close to the shop
+  if (nearShop() && !shopOpen) {
+    const sx = shop.x + shop.w/2 - cam.x;
+    const sy = shop.y - cam.y - 6;
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.fillRect(sx - 44, sy - 20, 88, 18);
+    ctx.fillStyle = "#ffd24a";
+    ctx.font = "bold 11px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("[E] Armor Shop", sx, sy - 6);
+  }
 
   ctx.textAlign = "start";
+}
+
+function drawShopBuilding(){
+  const sx = shop.x - cam.x, sy = shop.y - cam.y;
+  // base hut walls (red shrine palette)
+  ctx.fillStyle = "#3a1d1d";
+  ctx.fillRect(sx + 4, sy + 4, shop.w - 8, shop.h - 8);
+  ctx.fillStyle = "#a23b3b";
+  // four wall segments with door gap on south
+  const t = 8, doorW = 30;
+  const dx = sx + shop.w/2 - doorW/2;
+  ctx.fillRect(sx, sy, shop.w, t);                                   // top
+  ctx.fillRect(sx, sy + shop.h - t, dx - sx, t);                     // bottom-left
+  ctx.fillRect(dx + doorW, sy + shop.h - t, sx + shop.w - (dx + doorW), t); // bottom-right
+  ctx.fillRect(sx, sy, t, shop.h);                                   // left
+  ctx.fillRect(sx + shop.w - t, sy, t, shop.h);                      // right
+  // roof / cream trim
+  ctx.fillStyle = "#f0e6d2";
+  ctx.fillRect(sx - 6, sy - 8, shop.w + 12, 8);
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.fillRect(sx - 6, sy - 2, shop.w + 12, 2);
+  // door opening
+  ctx.fillStyle = "#1a120a";
+  ctx.fillRect(dx, sy + shop.h - t, doorW, t);
+  // hanging shop sign
+  ctx.fillStyle = "#ffd24a";
+  ctx.font = "bold 12px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("🛡️ ARMOR", sx + shop.w/2, sy - 14);
+  ctx.fillStyle = "#bbb";
+  ctx.font = "10px Arial";
+  ctx.fillText("walk up & press E", sx + shop.w/2, sy + shop.h + 14);
+  ctx.textAlign = "start";
+}
+
+// 🛍️ Full-canvas armor shop overlay
+function drawShopOverlay(){
+  // dim background
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const p = shopPanelRect();
+  // panel
+  ctx.fillStyle = "#1a1d22";
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.strokeStyle = "#ffd24a";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
+  // title
+  ctx.fillStyle = "#ffd24a";
+  ctx.font = "bold 18px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("🛡️  ARMOR SHOP", p.x + 16, p.y + 28);
+  ctx.fillStyle = "#aaa";
+  ctx.font = "11px Arial";
+  ctx.fillText("Best Level " + bests.bestLevel + " — unlock a new tier every 10 levels.",
+               p.x + 16, p.y + 46);
+  // close X
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 16px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("✕", p.x + p.w - 18, p.y + 22);
+
+  // rows
+  ctx.font = "12px Arial";
+  for (let i = 0; i < ARMOR_SETS.length; i++) {
+    const s = ARMOR_SETS[i];
+    const r = shopRowRect(i);
+    const unlocked = bests.bestLevel >= s.unlock;
+    const equipped = bests.armorTier === i;
+
+    // row background
+    ctx.fillStyle = equipped ? "rgba(255,210,74,0.18)"
+                  : unlocked ? "rgba(255,255,255,0.05)"
+                             : "rgba(255,80,80,0.05)";
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    if (equipped) {
+      ctx.strokeStyle = "#ffd24a";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    }
+
+    // armor swatch
+    if (s.color) {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(r.x + 6, r.y + 4, 16, 16);
+      ctx.strokeStyle = s.trim || "#000";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(r.x + 6.5, r.y + 4.5, 15, 15);
+    } else {
+      ctx.fillStyle = "#444";
+      ctx.fillRect(r.x + 6, r.y + 4, 16, 16);
+    }
+
+    // name
+    ctx.textAlign = "left";
+    ctx.fillStyle = unlocked ? "#fff" : "#777";
+    ctx.font = "bold 12px Arial";
+    ctx.fillText("Tier " + s.tier + " — " + s.name, r.x + 30, r.y + 16);
+
+    // damage reduction
+    ctx.textAlign = "right";
+    ctx.font = "12px Arial";
+    ctx.fillStyle = unlocked ? "#7ad3ff" : "#666";
+    ctx.fillText(Math.round(s.dr * 100) + "% DR", r.x + r.w - 110, r.y + 16);
+
+    // status
+    let status, color;
+    if (equipped)      { status = "EQUIPPED"; color = "#ffd24a"; }
+    else if (unlocked) { status = "click to equip"; color = "#9ae27a"; }
+    else               { status = "Lv " + s.unlock + " to unlock"; color = "#ff8888"; }
+    ctx.fillStyle = color;
+    ctx.font = "bold 11px Arial";
+    ctx.fillText(status, r.x + r.w - 6, r.y + 16);
+  }
+
+  // footer hint
+  ctx.fillStyle = "#888";
+  ctx.font = "11px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Press E or Esc to close", p.x + p.w/2, p.y + p.h - 10);
+  ctx.textAlign = "left";
 }
 
 function drawCombat(){
@@ -1928,8 +2433,10 @@ function drawCombat(){
   // player ninja (flicker on i-frames) — gun follows active slot
   if (!(player.inv > 0 && (player.inv % 8 < 4))) {
     const ag = activeEntry();
+    const ar = currentArmor();
     drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim,
-              { belt:"#1f3d80", gunKind: ag ? ag.gun : null });
+              { belt:"#1f3d80", gunKind: ag ? ag.gun : null,
+                armorColor: ar.color, armorTrim: ar.trim });
   }
 
   // floating pickup text
@@ -2014,6 +2521,7 @@ const hud = {
   hp: document.getElementById("hp"),
   ammo: document.getElementById("ammo"),
   gun: document.getElementById("gun"),
+  armor: document.getElementById("armor"),
   bestLvl: document.getElementById("bestLvl"),
   bestScore: document.getElementById("bestScore")
 };
@@ -2030,6 +2538,10 @@ function updateHud(){
     hud.ammo.textContent = "—";
     hud.gun.textContent = "(empty)";
   }
+  const armor = currentArmor();
+  hud.armor.textContent = armor.tier === 0
+    ? "None"
+    : armor.name + " (" + Math.round(armor.dr * 100) + "% DR)";
   hud.bestLvl.textContent = bests.bestLevel;
   hud.bestScore.textContent = bests.bestScore;
 }
@@ -2049,3 +2561,4 @@ loop();
 
 </body>
 </html>
+

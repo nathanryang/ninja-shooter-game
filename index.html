@@ -146,7 +146,7 @@ function levelStats(lv){
   const t = Math.min(1, Math.max(0, (lv - 1) / 99));
   return {
     hp:           Math.round(30 + t * 3970),  // 30 → 4000
-    speed:        0.9 + t * 5.6,              // 0.9 → 6.5 (matches player base speed)
+    speed:        0.16 + t * 1.04,            // 0.16 → 1.2 (matches player base speed)
     cooldownMult: 2.5 - t * 2.2,              // 2.5x → 0.3x base gun cooldown
     dmgMult:      0.25 + t * 1.55,            // 0.25x → 1.8x base gun damage
     spread:       0.55 - t * 0.53,            // 0.55 rad → 0.02 rad random aim wobble
@@ -170,46 +170,46 @@ const GUN_STATS = {
   // ── COMMON ─────────────────────────────────────────────────────────
   pistol:      { label:"Pistol",        rarity:"common",    dmg:18,  cooldown:8,  bullets:1, spread:0,    speed:9,  range:520, maxAmmo:30,  color:"#ffe066", kind:"round"  },
   smg:         { label:"SMG",           rarity:"common",    dmg:10,  cooldown:3,  bullets:1, spread:0.10, speed:10, range:480, maxAmmo:60,  color:"#ffd24a", kind:"round"  },
-  revolver:    { label:"Revolver",      rarity:"common",    dmg:32,  cooldown:18, bullets:1, spread:0.02, speed:11, range:620, maxAmmo:18,  color:"#dddddd", kind:"round"  },
-  pumpgun:     { label:"Pump Shotgun",  rarity:"common",    dmg:30,  cooldown:32, bullets:6, spread:0.28, speed:9,  range:160, maxAmmo:14,  color:"#e89030", kind:"pellet" },
+  revolver:    { label:"Revolver",      rarity:"common",    dmg:32,  cooldown:27, bullets:1, spread:0.02, speed:11, range:620, maxAmmo:18,  color:"#dddddd", kind:"round"  },
+  pumpgun:     { label:"Pump Shotgun",  rarity:"common",    dmg:30,  cooldown:64, bullets:6, spread:0.28, speed:9,  range:160, maxAmmo:14,  color:"#e89030", kind:"pellet" },
   derringer:   { label:"Derringer",     rarity:"common",    dmg:24,  cooldown:14, bullets:1, spread:0.04, speed:10, range:380, maxAmmo:12,  color:"#c9a66b", kind:"round"  },
-  sawnoff:     { label:"Sawn-Off",      rarity:"common",    dmg:22,  cooldown:28, bullets:5, spread:0.36, speed:8,  range:140, maxAmmo:12,  color:"#b87333", kind:"pellet" },
+  sawnoff:     { label:"Sawn-Off",      rarity:"common",    dmg:22,  cooldown:56, bullets:5, spread:0.36, speed:8,  range:140, maxAmmo:12,  color:"#b87333", kind:"pellet" },
   machpistol:  { label:"Machine Pistol",rarity:"common",    dmg:8,   cooldown:2,  bullets:1, spread:0.16, speed:10, range:380, maxAmmo:50,  color:"#e0c060", kind:"round"  },
   // ── UNCOMMON ───────────────────────────────────────────────────────
-  shotgun:     { label:"Shotgun",       rarity:"uncommon",  dmg:32,  cooldown:24, bullets:7, spread:0.22, speed:9,  range:180, maxAmmo:18,  color:"#ff9a3c", kind:"pellet" },
+  shotgun:     { label:"Shotgun",       rarity:"uncommon",  dmg:32,  cooldown:60, bullets:7, spread:0.22, speed:9,  range:180, maxAmmo:18,  color:"#ff9a3c", kind:"pellet" },
   carbine:     { label:"Carbine",       rarity:"uncommon",  dmg:24,  cooldown:10, bullets:1, spread:0.05, speed:13, range:720, maxAmmo:24,  color:"#ffd07a", kind:"round"  },
   doublepistol:{ label:"Akimbo Pistols",rarity:"uncommon",  dmg:14,  cooldown:5,  bullets:2, spread:0.05, speed:9,  range:500, maxAmmo:60,  color:"#ffe066", kind:"round"  },
-  leveraction: { label:"Lever Action",  rarity:"uncommon",  dmg:42,  cooldown:22, bullets:1, spread:0.02, speed:13, range:780, maxAmmo:14,  color:"#a8732e", kind:"round"  },
+  leveraction: { label:"Lever Action",  rarity:"uncommon",  dmg:42,  cooldown:33, bullets:1, spread:0.02, speed:13, range:780, maxAmmo:14,  color:"#a8732e", kind:"round"  },
   tacsmg:      { label:"Tactical SMG",  rarity:"uncommon",  dmg:12,  cooldown:3,  bullets:1, spread:0.06, speed:11, range:540, maxAmmo:48,  color:"#7fd1ff", kind:"round"  },
   nailgun:     { label:"Nailgun",       rarity:"uncommon",  dmg:11,  cooldown:4,  bullets:1, spread:0.02, speed:15, range:520, maxAmmo:60,  color:"#cccccc", kind:"bolt"   },
   // ── RARE ───────────────────────────────────────────────────────────
-  ar15:        { label:"AR-15",         rarity:"rare",      dmg:34,  cooldown:6,  bullets:1, spread:0.04, speed:14, range:900, maxAmmo:30,  color:"#ffae33", kind:"round"  },
-  crossbow:    { label:"Crossbow",      rarity:"rare",      dmg:65,  cooldown:32, bullets:1, spread:0,    speed:14, range:1100,maxAmmo:12,  color:"#a08060", kind:"bolt",   pierce:3 },
-  burstrifle:  { label:"Burst Rifle",   rarity:"rare",      dmg:20,  cooldown:14, bullets:3, spread:0.04, speed:14, range:800, maxAmmo:30,  color:"#ffc04a", kind:"round"  },
-  flak:        { label:"Flak Cannon",   rarity:"rare",      dmg:38,  cooldown:32, bullets:5, spread:0.30, speed:8,  range:220, maxAmmo:24,  color:"#b3ff66", kind:"pellet" },
-  scout:       { label:"Scout Rifle",   rarity:"rare",      dmg:90,  cooldown:38, bullets:1, spread:0,    speed:18, range:1100,maxAmmo:10,  color:"#7affd0", kind:"tracer" },
-  grenadelauncher:{ label:"Grenade Launcher",rarity:"rare", dmg:30,  cooldown:40, bullets:1, spread:0.02, speed:7,  range:520, maxAmmo:8,   color:"#9ad36b", kind:"rocket", aoe:70,  aoeDmg:35 },
-  doublebarrel:{ label:"Double Barrel", rarity:"rare",      dmg:36,  cooldown:30, bullets:8, spread:0.24, speed:9,  range:170, maxAmmo:12,  color:"#d4af37", kind:"pellet" },
+  ar15:        { label:"AR-15",         rarity:"rare",      dmg:34,  cooldown:9,  bullets:1, spread:0.04, speed:14, range:900, maxAmmo:30,  color:"#ffae33", kind:"round"  },
+  crossbow:    { label:"Crossbow",      rarity:"rare",      dmg:65,  cooldown:48, bullets:1, spread:0,    speed:14, range:1100,maxAmmo:12,  color:"#a08060", kind:"bolt",   pierce:3 },
+  burstrifle:  { label:"Burst Rifle",   rarity:"rare",      dmg:20,  cooldown:21, bullets:3, spread:0.04, speed:14, range:800, maxAmmo:30,  color:"#ffc04a", kind:"round"  },
+  flak:        { label:"Flak Cannon",   rarity:"rare",      dmg:38,  cooldown:64, bullets:5, spread:0.30, speed:8,  range:220, maxAmmo:24,  color:"#b3ff66", kind:"pellet" },
+  scout:       { label:"Scout Rifle",   rarity:"rare",      dmg:90,  cooldown:76, bullets:1, spread:0,    speed:18, range:1100,maxAmmo:10,  color:"#7affd0", kind:"tracer" },
+  grenadelauncher:{ label:"Grenade Launcher",rarity:"rare", dmg:30,  cooldown:60, bullets:1, spread:0.02, speed:7,  range:520, maxAmmo:8,   color:"#9ad36b", kind:"rocket", aoe:70,  aoeDmg:35 },
+  doublebarrel:{ label:"Double Barrel", rarity:"rare",      dmg:36,  cooldown:75, bullets:8, spread:0.24, speed:9,  range:170, maxAmmo:12,  color:"#d4af37", kind:"pellet" },
   // ── LEGENDARY ──────────────────────────────────────────────────────
   minigun:     { label:"Minigun",       rarity:"legendary", dmg:6,   cooldown:2,  bullets:1, spread:0.14, speed:12, range:520, maxAmmo:200, color:"#ffe066", kind:"round"  },
   laser:       { label:"Laser",         rarity:"legendary", dmg:22,  cooldown:5,  bullets:1, spread:0,    speed:18, range:800, maxAmmo:50,  color:"#ff4ad1", kind:"beam"   },
-  plasma:      { label:"Plasma Rifle",  rarity:"legendary", dmg:38,  cooldown:16, bullets:1, spread:0,    speed:12, range:700, maxAmmo:24,  color:"#7affd0", kind:"plasma", aoe:36, aoeDmg:18 },
-  sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:90, bullets:1, spread:0,    speed:22, range:1400,maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4 },
-  autoshotgun: { label:"Auto Shotgun",  rarity:"legendary", dmg:18,  cooldown:8,  bullets:6, spread:0.22, speed:9,  range:200, maxAmmo:36,  color:"#ff7f50", kind:"pellet" },
+  plasma:      { label:"Plasma Rifle",  rarity:"legendary", dmg:38,  cooldown:24, bullets:1, spread:0,    speed:12, range:700, maxAmmo:24,  color:"#7affd0", kind:"plasma", aoe:36, aoeDmg:18 },
+  sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:225,bullets:1, spread:0,    speed:22, range:1400,maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4 },
+  autoshotgun: { label:"Auto Shotgun",  rarity:"legendary", dmg:18,  cooldown:16, bullets:6, spread:0.22, speed:9,  range:200, maxAmmo:36,  color:"#ff7f50", kind:"pellet" },
   flamer:      { label:"Flamethrower",  rarity:"legendary", dmg:9,   cooldown:1,  bullets:2, spread:0.18, speed:8,  range:240, maxAmmo:160, color:"#ff7733", kind:"plasma", aoe:14, aoeDmg:5 },
-  gauss:       { label:"Gauss Rifle",   rarity:"legendary", dmg:80,  cooldown:18, bullets:1, spread:0,    speed:20, range:1100,maxAmmo:16,  color:"#aaddff", kind:"tracer", pierce:2 },
+  gauss:       { label:"Gauss Rifle",   rarity:"legendary", dmg:80,  cooldown:27, bullets:1, spread:0,    speed:20, range:1100,maxAmmo:16,  color:"#aaddff", kind:"tracer", pierce:2 },
   // ── MYTHIC ─────────────────────────────────────────────────────────
-  rocket:      { label:"RPG",           rarity:"mythic",    dmg:55,  cooldown:55, bullets:1, spread:0,    speed:7,  range:900, maxAmmo:5,   color:"#ff5252", kind:"rocket", aoe:90,  aoeDmg:45  },
-  railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:75, bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8 },
-  bfg:         { label:"BFG-9000",      rarity:"mythic",    dmg:180, cooldown:110,bullets:1, spread:0,    speed:5,  range:700, maxAmmo:3,   color:"#aaff66", kind:"rocket", aoe:180, aoeDmg:160 },
-  thunder:     { label:"Thunder Cannon",rarity:"mythic",    dmg:55,  cooldown:8,  bullets:1, spread:0.02, speed:24, range:900, maxAmmo:40,  color:"#dceaff", kind:"beam"   },
+  rocket:      { label:"RPG",           rarity:"mythic",    dmg:55,  cooldown:110,bullets:1, spread:0,    speed:7,  range:900, maxAmmo:5,   color:"#ff5252", kind:"rocket", aoe:90,  aoeDmg:45  },
+  railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:188,bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8 },
+  bfg:         { label:"BFG-9000",      rarity:"mythic",    dmg:180, cooldown:275,bullets:1, spread:0,    speed:5,  range:700, maxAmmo:3,   color:"#aaff66", kind:"rocket", aoe:180, aoeDmg:160 },
+  thunder:     { label:"Thunder Cannon",rarity:"mythic",    dmg:55,  cooldown:20, bullets:1, spread:0.02, speed:24, range:900, maxAmmo:40,  color:"#dceaff", kind:"beam"   },
   chaingun:    { label:"Chain Gun",     rarity:"mythic",    dmg:14,  cooldown:1,  bullets:1, spread:0.10, speed:14, range:700, maxAmmo:300, color:"#ffcc66", kind:"round"  },
-  ioncannon:   { label:"Ion Cannon",    rarity:"mythic",    dmg:140, cooldown:30, bullets:1, spread:0,    speed:16, range:1000,maxAmmo:14,  color:"#66ffff", kind:"plasma", aoe:60, aoeDmg:60 },
+  ioncannon:   { label:"Ion Cannon",    rarity:"mythic",    dmg:140, cooldown:75, bullets:1, spread:0,    speed:16, range:1000,maxAmmo:14,  color:"#66ffff", kind:"plasma", aoe:60, aoeDmg:60 },
   // ⚡⚡ AIRDROP-ONLY god weapons (never appear in normal crates)
-  masterbolt:  { label:"Master Bolt",   rarity:"mythic",    dmg:140, cooldown:7,  bullets:1, spread:0,    speed:30, range:1200,maxAmmo:40,  color:"#ffd24a", kind:"beam",   pierce:6, airdropOnly:true, lore:"Zeus's thunderbolt forged by Cyclopes" },
-  trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:60, bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" },
-  excalibur:   { label:"Excalibur",     rarity:"mythic",    dmg:200, cooldown:10, bullets:3, spread:0.04, speed:22, range:1000,maxAmmo:30,  color:"#ffffff", kind:"beam",   pierce:5, airdropOnly:true, lore:"The legendary sword of King Arthur, reforged as a triple-beam relic" },
-  gungnir:     { label:"Gungnir",       rarity:"mythic",    dmg:260, cooldown:14, bullets:1, spread:0,    speed:32, range:1600,maxAmmo:20,  color:"#9ad7ff", kind:"tracer", pierce:10, airdropOnly:true, lore:"Odin's spear — never misses its mark" }
+  masterbolt:  { label:"Master Bolt",   rarity:"mythic",    dmg:140, cooldown:32, bullets:1, spread:0,    speed:30, range:1200,maxAmmo:40,  color:"#ffd24a", kind:"beam",   pierce:6, airdropOnly:true, lore:"Zeus's thunderbolt forged by Cyclopes" },
+  trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:150,bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" },
+  excalibur:   { label:"Excalibur",     rarity:"mythic",    dmg:200, cooldown:50, bullets:3, spread:0.04, speed:22, range:1000,maxAmmo:30,  color:"#ffffff", kind:"beam",   pierce:5, airdropOnly:true, lore:"The legendary sword of King Arthur, reforged as a triple-beam relic" },
+  gungnir:     { label:"Gungnir",       rarity:"mythic",    dmg:260, cooldown:70, bullets:1, spread:0,    speed:32, range:1600,maxAmmo:20,  color:"#9ad7ff", kind:"tracer", pierce:10, airdropOnly:true, lore:"Odin's spear — never misses its mark" }
 };
 const GUN_NAMES = Object.keys(GUN_STATS);
 const MAX_INVENTORY = 5;
@@ -314,7 +314,7 @@ function resetPlayer(spawnX, spawnY){
   player = {
     x: spawnX, y: spawnY,
     size: 22,
-    speed: 6.5,
+    speed: 1.2,
     hp: 100,
     maxHp: 100,
     inv: 0,
@@ -2561,4 +2561,3 @@ loop();
 
 </body>
 </html>
-

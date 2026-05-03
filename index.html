@@ -4,13 +4,16 @@
   <meta charset="utf-8">
   <title>Ninja Loot Shooter</title>
   <style>
-    body {
+    html, body {
       margin:0;
+      padding:0;
       background:#0e0f12;
       color:white;
       text-align:center;
       font-family:Arial;
+      overflow:hidden;
     }
+    h2 { margin:4px 0 0; font-size:18px; }
     canvas {
       display:block;
       margin:auto;
@@ -19,8 +22,8 @@
       cursor:none;
     }
     #stats {
-      max-width:600px;
-      margin:8px auto 0;
+      max-width:1280px;
+      margin:6px auto 0;
       display:flex;
       justify-content:space-between;
       font-family:Arial, sans-serif;
@@ -42,7 +45,7 @@
   Move: <b>WASD</b> or <b>Arrow Keys</b> &nbsp;·&nbsp; Aim/Shoot: <b>Mouse</b>
   &nbsp;·&nbsp; <em>Click the game once to focus.</em>
 </p>
-<canvas id="game" width="600" height="450" tabindex="0"></canvas>
+<canvas id="game" width="1280" height="800" tabindex="0"></canvas>
 <div id="stats">
   <span>Level: <b id="lvl">1</b></span>
   <span>Score: <b id="score">0</b></span>
@@ -58,7 +61,21 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
-// 🌍 WORLDS comment
+// 🖥️ RESPONSIVE VIEWPORT — fit canvas to the user's window
+function fitCanvasToWindow(){
+  const headerH = 70; // room for title + stats
+  const w = Math.max(800,  Math.floor(window.innerWidth  - 20));
+  const h = Math.max(600,  Math.floor(window.innerHeight - headerH));
+  canvas.width  = w;
+  canvas.height = h;
+}
+fitCanvasToWindow();
+window.addEventListener("resize", fitCanvasToWindow);
+// Live viewport size getters (always fresh after resize)
+function VIEW_W(){ return canvas.width; }
+function VIEW_H(){ return canvas.height; }
+
+// 🌍 WORLDS
 const dojo  = {width:2600, height:2000};         // combat arena
 const lobby = {width:800,  height:600};          // safe hub
 
@@ -69,6 +86,8 @@ let cam = {x:0,y:0};
 let scene = "lobby";        // "lobby" | "playing" | "gameover"
 let level = 1;
 let score = 0;
+let levelTimer = 0;         // countdown frames (90s × 60fps = 5400)
+let physicsZones = [];      // { x,y,w,h,type } terrain zones
 let savedNewRecord = false;
 
 // 🏆 PERSISTENT BESTS (localStorage)
@@ -76,15 +95,18 @@ const STORAGE_KEY = "lootShooterBests_v1";
 function loadBests() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { bestLevel: 1, bestScore: 0, armorTier: 0 };
+    if (!raw) return { bestLevel:1, bestScore:0, armorTier:0, coins:0, helmetTier:0, bootsTier:0 };
     const v = JSON.parse(raw);
     return {
-      bestLevel: Number.isFinite(v.bestLevel) ? v.bestLevel : 1,
-      bestScore: Number.isFinite(v.bestScore) ? v.bestScore : 0,
-      armorTier: Number.isFinite(v.armorTier) ? v.armorTier : 0
+      bestLevel:  Number.isFinite(v.bestLevel)  ? v.bestLevel  : 1,
+      bestScore:  Number.isFinite(v.bestScore)  ? v.bestScore  : 0,
+      armorTier:  Number.isFinite(v.armorTier)  ? v.armorTier  : 0,
+      coins:      Number.isFinite(v.coins)      ? v.coins      : 0,
+      helmetTier: Number.isFinite(v.helmetTier) ? v.helmetTier : 0,
+      bootsTier:  Number.isFinite(v.bootsTier)  ? v.bootsTier  : 0
     };
   } catch (e) {
-    return { bestLevel: 1, bestScore: 0, armorTier: 0 };
+    return { bestLevel:1, bestScore:0, armorTier:0, coins:0, helmetTier:0, bootsTier:0 };
   }
 }
 function saveBests() {
@@ -108,19 +130,46 @@ const ARMOR_SETS = [
   { tier:9,  name:"Celestial Aegis",dr:0.70,color:"#e8e0a8",  trim:"#c8a838",   unlock:90  },
   { tier:10, name:"Ninja King",    dr:0.78, color:"#ffd24a",  trim:"#3a2a00",   unlock:100 }
 ];
+// 🪖 HELMET SHOP — buy with coins to reduce incoming damage
+const HELMET_SHOP = [
+  { tier:0, name:"None",           dr:0.00, price:0,     color:null,      trim:null        },
+  { tier:1, name:"Leather Cap",    dr:0.07, price:60,    color:"#8a5a32", trim:"#5a3010"   },
+  { tier:2, name:"Iron Helmet",    dr:0.14, price:250,   color:"#9aa3ad", trim:"#5a626b"   },
+  { tier:3, name:"Steel Visor",    dr:0.22, price:1000,  color:"#c0c8d0", trim:"#6b7480"   },
+  { tier:4, name:"Dragon Helm",    dr:0.32, price:4500,  color:"#d24a3a", trim:"#7a1a10"   },
+  { tier:5, name:"Shadow Hood",    dr:0.42, price:20000, color:"#3a2a4a", trim:"#1a0a2a"   }
+];
+// 👟 BOOTS SHOP — buy with coins to increase movement speed
+const BOOTS_SHOP = [
+  { tier:0, name:"None",            bonus:0.00, price:0,     color:null      },
+  { tier:1, name:"Light Sandals",   bonus:0.12, price:75,    color:"#c8b460" },
+  { tier:2, name:"Runner Boots",    bonus:0.25, price:350,   color:"#8a5a32" },
+  { tier:3, name:"Swift Treads",    bonus:0.45, price:1500,  color:"#5a8ab0" },
+  { tier:4, name:"Phantom Steps",   bonus:0.70, price:6500,  color:"#8060d0" },
+  { tier:5, name:"Shadow Stride",   bonus:1.05, price:28000, color:"#1a1a30" }
+];
+
 function currentArmor(){ return ARMOR_SETS[Math.max(0, Math.min(ARMOR_SETS.length-1, bests.armorTier|0))]; }
+function currentHelmet(){ return HELMET_SHOP[Math.max(0, Math.min(HELMET_SHOP.length-1, bests.helmetTier|0))]; }
+function currentBoots(){ return BOOTS_SHOP[Math.max(0, Math.min(BOOTS_SHOP.length-1, bests.bootsTier|0))]; }
+
 function applyDamage(raw){
   const a = currentArmor();
-  const reduced = Math.max(0, Math.round(raw * (1 - a.dr)));
-  // ensure any non-zero hit deals at least 1 (so endgame armor isn't invincible)
+  const h = currentHelmet();
+  const totalDR = Math.min(0.88, a.dr + h.dr);  // combined DR, capped at 88%
+  const reduced = Math.max(0, Math.round(raw * (1 - totalDR)));
   const dmg = (raw > 0 && reduced === 0) ? 1 : reduced;
   player.hp -= dmg;
   return dmg;
 }
 
+// 💰 COIN STATE (runtime — resets each run but feeds persistent bests.coins)
+let coins = 0;  // coins earned this run, added to bests.coins on level-up/death
+
 // 🏪 SHOP STATE
 let shopOpen = false;
 let shopHover = -1;
+let shopTab = "armor";   // "armor" | "helmet" | "boots"
 const shop = { x: 560, y: 380, w: 80, h: 70 }; // visible to the right of the lobby spawn
 
 // 🥷 PLAYER
@@ -187,20 +236,27 @@ const GUN_STATS = {
   crossbow:    { label:"Crossbow",      rarity:"rare",      dmg:65,  cooldown:48, bullets:1, spread:0,    speed:14, range:1100,maxAmmo:12,  color:"#a08060", kind:"bolt",   pierce:3 },
   burstrifle:  { label:"Burst Rifle",   rarity:"rare",      dmg:20,  cooldown:21, bullets:3, spread:0.04, speed:14, range:800, maxAmmo:30,  color:"#ffc04a", kind:"round"  },
   flak:        { label:"Flak Cannon",   rarity:"rare",      dmg:38,  cooldown:64, bullets:5, spread:0.30, speed:8,  range:220, maxAmmo:24,  color:"#b3ff66", kind:"pellet" },
-  scout:       { label:"Scout Rifle",   rarity:"rare",      dmg:90,  cooldown:76, bullets:1, spread:0,    speed:18, range:1100,maxAmmo:10,  color:"#7affd0", kind:"tracer" },
+  scout:       { label:"Scout Rifle",   rarity:"rare",      dmg:90,  cooldown:76, bullets:1, spread:0,    speed:18, range:1100,maxAmmo:10,  color:"#7affd0", kind:"tracer", zoom:1.25, minRange:250 },
+  marksman:    { label:"Marksman Rifle",rarity:"rare",      dmg:60,  cooldown:32, bullets:1, spread:0.01, speed:18, range:850, maxAmmo:14,  color:"#c0d6ff", kind:"tracer", zoom:1.20, minRange:200 },
+  hunting:     { label:"Hunting Rifle", rarity:"rare",      dmg:95,  cooldown:50, bullets:1, spread:0,    speed:18, range:1000,maxAmmo:10,  color:"#c8a878", kind:"tracer", zoom:1.30, minRange:280 },
+  recon:       { label:"Recon Sniper",  rarity:"rare",      dmg:70,  cooldown:36, bullets:1, spread:0,    speed:20, range:950, maxAmmo:12,  color:"#99c97a", kind:"tracer", zoom:1.45, minRange:250 },
   grenadelauncher:{ label:"Grenade Launcher",rarity:"rare", dmg:30,  cooldown:60, bullets:1, spread:0.02, speed:7,  range:520, maxAmmo:8,   color:"#9ad36b", kind:"rocket", aoe:70,  aoeDmg:35 },
   doublebarrel:{ label:"Double Barrel", rarity:"rare",      dmg:36,  cooldown:75, bullets:8, spread:0.24, speed:9,  range:170, maxAmmo:12,  color:"#d4af37", kind:"pellet" },
+  toxicgun:    { label:"Toxic Sprayer", rarity:"rare",      dmg:4,   cooldown:7,  bullets:1, spread:0.10, speed:7,  range:300, maxAmmo:55,  color:"#88ff33", kind:"plasma", dot:{dmg:9,ticks:6,interval:38} },
   // ── LEGENDARY ──────────────────────────────────────────────────────
   minigun:     { label:"Minigun",       rarity:"legendary", dmg:6,   cooldown:2,  bullets:1, spread:0.14, speed:12, range:520, maxAmmo:200, color:"#ffe066", kind:"round"  },
   laser:       { label:"Laser",         rarity:"legendary", dmg:22,  cooldown:5,  bullets:1, spread:0,    speed:18, range:800, maxAmmo:50,  color:"#ff4ad1", kind:"beam"   },
   plasma:      { label:"Plasma Rifle",  rarity:"legendary", dmg:38,  cooldown:24, bullets:1, spread:0,    speed:12, range:700, maxAmmo:24,  color:"#7affd0", kind:"plasma", aoe:36, aoeDmg:18 },
-  sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:225,bullets:1, spread:0,    speed:22, range:1400,maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4 },
+  sniper:      { label:"Sniper",        rarity:"legendary", dmg:9999,cooldown:225,bullets:1, spread:0,    speed:22, range:700, maxAmmo:6,   color:"#9ad7ff", kind:"tracer", pierce:4, zoom:1.40, minRange:350 },
+  heavysniper: { label:"Heavy Sniper",  rarity:"legendary", dmg:180, cooldown:90, bullets:1, spread:0,    speed:22, range:1100,maxAmmo:8,   color:"#ff8060", kind:"tracer", pierce:2, zoom:1.55, minRange:400 },
+  antimaterial:{ label:"Anti-Materiel", rarity:"legendary", dmg:300, cooldown:130,bullets:1, spread:0,    speed:24, range:1300,maxAmmo:5,   color:"#ff5252", kind:"tracer", pierce:3, zoom:1.65, minRange:450 },
   autoshotgun: { label:"Auto Shotgun",  rarity:"legendary", dmg:18,  cooldown:16, bullets:6, spread:0.22, speed:9,  range:200, maxAmmo:36,  color:"#ff7f50", kind:"pellet" },
-  flamer:      { label:"Flamethrower",  rarity:"legendary", dmg:9,   cooldown:1,  bullets:2, spread:0.18, speed:8,  range:240, maxAmmo:160, color:"#ff7733", kind:"plasma", aoe:14, aoeDmg:5 },
-  gauss:       { label:"Gauss Rifle",   rarity:"legendary", dmg:80,  cooldown:27, bullets:1, spread:0,    speed:20, range:1100,maxAmmo:16,  color:"#aaddff", kind:"tracer", pierce:2 },
+  flamer:      { label:"Flamethrower",  rarity:"legendary", dmg:9,   cooldown:1,  bullets:2, spread:0.18, speed:8,  range:240, maxAmmo:160, color:"#ff7733", kind:"plasma", aoe:14, aoeDmg:5, dot:{dmg:6,ticks:4,interval:30} },
+  gauss:       { label:"Gauss Rifle",   rarity:"legendary", dmg:80,  cooldown:27, bullets:1, spread:0,    speed:20, range:1100,maxAmmo:16,  color:"#aaddff", kind:"tracer", pierce:2, zoom:1.30 },
   // ── MYTHIC ─────────────────────────────────────────────────────────
   rocket:      { label:"RPG",           rarity:"mythic",    dmg:55,  cooldown:110,bullets:1, spread:0,    speed:7,  range:900, maxAmmo:5,   color:"#ff5252", kind:"rocket", aoe:90,  aoeDmg:45  },
-  railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:188,bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8 },
+  railgun:     { label:"Railgun",       rarity:"mythic",    dmg:220, cooldown:188,bullets:1, spread:0,    speed:30, range:2000,maxAmmo:5,   color:"#aaffff", kind:"tracer", pierce:8, zoom:1.50, minRange:500 },
+  longeye:     { label:"Long Eye",      rarity:"mythic",    dmg:130, cooldown:60, bullets:1, spread:0,    speed:24, range:1800,maxAmmo:10,  color:"#aaeeff", kind:"tracer", pierce:4, zoom:2.00, minRange:600 },
   bfg:         { label:"BFG-9000",      rarity:"mythic",    dmg:180, cooldown:275,bullets:1, spread:0,    speed:5,  range:700, maxAmmo:3,   color:"#aaff66", kind:"rocket", aoe:180, aoeDmg:160 },
   thunder:     { label:"Thunder Cannon",rarity:"mythic",    dmg:55,  cooldown:20, bullets:1, spread:0.02, speed:24, range:900, maxAmmo:40,  color:"#dceaff", kind:"beam"   },
   chaingun:    { label:"Chain Gun",     rarity:"mythic",    dmg:14,  cooldown:1,  bullets:1, spread:0.10, speed:14, range:700, maxAmmo:300, color:"#ffcc66", kind:"round"  },
@@ -209,7 +265,7 @@ const GUN_STATS = {
   masterbolt:  { label:"Master Bolt",   rarity:"mythic",    dmg:140, cooldown:32, bullets:1, spread:0,    speed:30, range:1200,maxAmmo:40,  color:"#ffd24a", kind:"beam",   pierce:6, airdropOnly:true, lore:"Zeus's thunderbolt forged by Cyclopes" },
   trident:     { label:"Trident",       rarity:"mythic",    dmg:120, cooldown:150,bullets:1, spread:0,    speed:9,  range:800, maxAmmo:5,   color:"#3aa0ff", kind:"rocket", aoe:200, aoeDmg:140, airdropOnly:true, lore:"Poseidon's three-pronged spear, capable of causing earthquakes" },
   excalibur:   { label:"Excalibur",     rarity:"mythic",    dmg:200, cooldown:50, bullets:3, spread:0.04, speed:22, range:1000,maxAmmo:30,  color:"#ffffff", kind:"beam",   pierce:5, airdropOnly:true, lore:"The legendary sword of King Arthur, reforged as a triple-beam relic" },
-  gungnir:     { label:"Gungnir",       rarity:"mythic",    dmg:260, cooldown:70, bullets:1, spread:0,    speed:32, range:1600,maxAmmo:20,  color:"#9ad7ff", kind:"tracer", pierce:10, airdropOnly:true, lore:"Odin's spear — never misses its mark" }
+  gungnir:     { label:"Gungnir",       rarity:"mythic",    dmg:260, cooldown:70, bullets:1, spread:0,    speed:32, range:1600,maxAmmo:20,  color:"#9ad7ff", kind:"tracer", pierce:10, zoom:1.70, airdropOnly:true, lore:"Odin's spear — never misses its mark" }
 };
 const GUN_NAMES = Object.keys(GUN_STATS);
 const MAX_INVENTORY = 5;
@@ -279,8 +335,7 @@ canvas.addEventListener("mousemove",e=>{
   let r = canvas.getBoundingClientRect();
   mouseScreen.x = e.clientX - r.left;
   mouseScreen.y = e.clientY - r.top;
-  mouse.x = mouseScreen.x + cam.x;
-  mouse.y = mouseScreen.y + cam.y;
+  updateWorldMouse();
 });
 canvas.addEventListener("mousedown", onMouseDown);
 canvas.addEventListener("mouseup",   onMouseUp);
@@ -314,18 +369,18 @@ function resetPlayer(spawnX, spawnY){
   player = {
     x: spawnX, y: spawnY,
     size: 22,
-    speed: 1.2,
+    speed: 1.2 + currentBoots().bonus,
     hp: 100,
     maxHp: 100,
     inv: 0,
     cooldown: 0,
-    aim: 0,                 // facing angle (radians)
-    // upgrades from gold chests (additive)
+    aim: 0,
+    vx: 0, vy: 0,
+    zoneDamageTick: 0,
     damageBonus: 0,
     fireRateLevel: 0,
     bulletSpeedBonus: 0,
     multishot: 0,
-    // 🎒 inventory (max 5 guns)
     inventory: [{ gun:"pistol", ammo: GUN_STATS.pistol.maxAmmo }],
     activeSlot: 0
   };
@@ -333,6 +388,23 @@ function resetPlayer(spawnX, spawnY){
 
 function activeEntry(){
   return player.inventory[player.activeSlot] || null;
+}
+// Returns the physics zone the player centre is standing in (or null)
+function getPlayerZone(){
+  const cx = player.x + player.size/2, cy = player.y + player.size/2;
+  for (const z of physicsZones){
+    if (cx > z.x && cx < z.x+z.w && cy > z.y && cy < z.y+z.h) return z;
+  }
+  return null;
+}
+function getZoom(){
+  const g = activeGun();
+  return (g && g.zoom) ? g.zoom : 1.0;
+}
+function updateWorldMouse(){
+  const z = getZoom();
+  mouse.x = mouseScreen.x * z + cam.x;
+  mouse.y = mouseScreen.y * z + cam.y;
 }
 function activeGun(){
   const e = activeEntry();
@@ -507,6 +579,28 @@ function spawnLevel(){
   walls = [];
   bushes = [];
   airdrops = [];
+  physicsZones = [];
+
+  // 🌍 PHYSICS ZONES — place 1-2 of each type, avoiding player spawn + buildings
+  const ZONE_TYPES = ["water","ice","fire","forest","nuclear"];
+  const playerSafeZone = { x:200, y:200, w:200, h:200 };
+  for (const type of ZONE_TYPES){
+    const count = 1 + (Math.random() < 0.55 ? 1 : 0);
+    for (let zi=0; zi<count; zi++){
+      let zx, zy, zw, zh, tries=0;
+      do {
+        zw = 180 + Math.random()*180;
+        zh = 160 + Math.random()*160;
+        zx = 80 + Math.random()*(dojo.width  - zw - 80);
+        zy = 80 + Math.random()*(dojo.height - zh - 80);
+        tries++;
+      } while (tries < 30 && (
+        rectsOverlap({x:zx,y:zy,w:zw,h:zh}, playerSafeZone, 20) ||
+        buildings.some(b=>rectsOverlap({x:zx,y:zy,w:zw,h:zh}, b, 10))
+      ));
+      if (tries < 30) physicsZones.push({ x:zx, y:zy, w:zw, h:zh, type, tick:0 });
+    }
+  }
 
   // 🏚️ Place 12 apartments (no overlap, not on player spawn) — try harder
   const playerSafe = { x: 280, y: 280, w: 120, h: 120 };
@@ -558,7 +652,8 @@ function spawnLevel(){
     dmgMult: s.dmgMult,
     spread: s.spread,
     strafeDir: Math.random() < 0.5 ? -1 : 1,
-    strafeTimer: 60 + Math.random()*90
+    strafeTimer: 60 + Math.random()*90,
+    dotEffects: []
   });
 
   // 📦 A couple of outdoor gun crates (in addition to those inside buildings)
@@ -610,6 +705,7 @@ function spawnLevel(){
   // ⚡ AIRDROP — falls from the sky carrying a god-tier mythic gun.
   // Only one drops every 5 levels (5, 10, 15, ...).
   if (level % 5 === 0) spawnAirdrop();
+  levelTimer = 90 * 60;  // 1:30 per level
 }
 
 // ⚡ Spawn an airdrop somewhere in the dojo (away from buildings).
@@ -674,30 +770,76 @@ function onMouseDown(e){
 
 // 🛍️ Shop UI — list rows down the panel; click a row to equip if unlocked.
 function shopPanelRect(){
-  const W = 460, H = 380;
+  const W = 500, H = 440;
   return { x: (canvas.width - W) / 2, y: (canvas.height - H) / 2, w: W, h: H };
 }
 function shopRowRect(i){
   const p = shopPanelRect();
   const rowH = 28;
-  return { x: p.x + 16, y: p.y + 60 + i * rowH, w: p.w - 32, h: rowH - 4 };
+  return { x: p.x + 16, y: p.y + 90 + i * rowH, w: p.w - 32, h: rowH - 4 };
+}
+function shopTabRect(idx){
+  const p = shopPanelRect();
+  const tabs = ["armor","helmet","boots"];
+  const tw = (p.w - 32) / tabs.length;
+  return { x: p.x + 16 + idx * tw, y: p.y + 46, w: tw - 4, h: 26 };
 }
 function handleShopClick(mx, my){
   const p = shopPanelRect();
-  // close button (X)
+  // close button
   if (mx >= p.x + p.w - 30 && mx <= p.x + p.w - 6 &&
       my >= p.y + 6        && my <= p.y + 30) {
     shopOpen = false; return;
   }
-  for (let i = 0; i < ARMOR_SETS.length; i++) {
-    const r = shopRowRect(i);
-    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
-      const set = ARMOR_SETS[i];
-      if (bests.bestLevel >= set.unlock) {
-        bests.armorTier = i;
-        saveBests();
+  // tab clicks
+  const tabs = ["armor","helmet","boots"];
+  for (let ti = 0; ti < tabs.length; ti++){
+    const tr = shopTabRect(ti);
+    if (mx >= tr.x && mx <= tr.x+tr.w && my >= tr.y && my <= tr.y+tr.h){
+      shopTab = tabs[ti]; return;
+    }
+  }
+  // row clicks
+  if (shopTab === "armor"){
+    for (let i = 0; i < ARMOR_SETS.length; i++) {
+      const r = shopRowRect(i);
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+        if (bests.bestLevel >= ARMOR_SETS[i].unlock) { bests.armorTier = i; saveBests(); }
+        return;
       }
-      return;
+    }
+  } else if (shopTab === "helmet"){
+    for (let i = 0; i < HELMET_SHOP.length; i++){
+      const r = shopRowRect(i);
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h){
+        const item = HELMET_SHOP[i];
+        if (i === 0) { bests.helmetTier = 0; saveBests(); }
+        else if (bests.helmetTier >= i) { bests.helmetTier = i; saveBests(); } // re-equip lower tier
+        else if (bests.coins >= item.price){
+          bests.coins -= item.price;
+          bests.helmetTier = i;
+          saveBests();
+          pushPickup(player ? player.x : 400, player ? player.y : 300, "Bought " + item.name + "!", "#ffd24a");
+        }
+        return;
+      }
+    }
+  } else if (shopTab === "boots"){
+    for (let i = 0; i < BOOTS_SHOP.length; i++){
+      const r = shopRowRect(i);
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h){
+        const item = BOOTS_SHOP[i];
+        if (i === 0) { bests.bootsTier = 0; saveBests(); }
+        else if (bests.bootsTier >= i) { bests.bootsTier = i; saveBests(); }
+        else if (bests.coins >= item.price){
+          bests.coins -= item.price;
+          bests.bootsTier = i;
+          saveBests();
+          if (player) player.speed = 1.2 + currentBoots().bonus;
+          pushPickup(player ? player.x : 400, player ? player.y : 300, "Bought " + item.name + "!", "#ffd24a");
+        }
+        return;
+      }
     }
   }
 }
@@ -777,18 +919,22 @@ function shoot(){
     bullets.push({
       x: player.x + player.size/2,
       y: player.y + player.size/2,
+      startX: player.x + player.size/2,
+      startY: player.y + player.size/2,
       dx: Math.cos(ang) * speed,
       dy: Math.sin(ang) * speed,
       ang: ang,
       size: (g.kind === "rocket") ? 7 : (g.kind === "bolt" ? 4 : (g.kind === "tracer" ? 3 : (g.kind === "pellet" ? 4 : 5))),
       dmg: dmg,
       life: life,
-      pierce: g.pierce ? g.pierce : 0,    // number of additional hits allowed
+      pierce: g.pierce ? g.pierce : 0,
       hits: 0,
       color: g.color,
       kind: g.kind,
       aoe: g.aoe || 0,
-      aoeDmg: g.aoeDmg || 0
+      aoeDmg: g.aoeDmg || 0,
+      dot: g.dot || null,
+      minRange: g.minRange || 0
     });
   }
 }
@@ -809,19 +955,46 @@ function move(){
                             mouse.x - (player.x+player.size/2));
     return;
   }
-  if(keys["w"] || keys["arrowup"])    player.y -= player.speed;
-  if(keys["s"] || keys["arrowdown"])  player.y += player.speed;
-  if(keys["a"] || keys["arrowleft"])  player.x -= player.speed;
-  if(keys["d"] || keys["arrowright"]) player.x += player.speed;
+
+  const zone = (scene === "playing") ? getPlayerZone() : null;
+  const ztype = zone ? zone.type : null;
+
+  // Speed modifier from terrain
+  let spd = player.speed;
+  if (ztype === "water")   spd *= 0.48;
+  if (ztype === "forest")  spd *= 0.65;
+  if (ztype === "nuclear") spd *= 0.78;
+  // fire: no speed change — just damage
+  // ice: velocity-based (handled below)
+
+  if (ztype === "ice"){
+    // Accumulate velocity, very slow friction → slide
+    const accel = 0.14;
+    const friction = 0.97;
+    if(keys["w"] || keys["arrowup"])    player.vy -= accel;
+    if(keys["s"] || keys["arrowdown"])  player.vy += accel;
+    if(keys["a"] || keys["arrowleft"])  player.vx -= accel;
+    if(keys["d"] || keys["arrowright"]) player.vx += accel;
+    // clamp to base speed
+    const maxV = player.speed * 1.6;
+    player.vx = Math.max(-maxV, Math.min(maxV, player.vx)) * friction;
+    player.vy = Math.max(-maxV, Math.min(maxV, player.vy)) * friction;
+    player.x += player.vx;
+    player.y += player.vy;
+  } else {
+    // Normal (or slowed) direct movement
+    if(keys["w"] || keys["arrowup"])    player.y -= spd;
+    if(keys["s"] || keys["arrowdown"])  player.y += spd;
+    if(keys["a"] || keys["arrowleft"])  player.x -= spd;
+    if(keys["d"] || keys["arrowright"]) player.x += spd;
+    // Bleed off ice velocity when not on ice
+    player.vx *= 0.7; player.vy *= 0.7;
+  }
 
   const w = world();
   player.x = Math.max(0, Math.min(w.width  - player.size, player.x));
   player.y = Math.max(0, Math.min(w.height - player.size, player.y));
-
-  // wall collisions
   resolveWallCollisions(player);
-
-  // update facing angle from mouse
   player.aim = Math.atan2(mouse.y - (player.y+player.size/2),
                           mouse.x - (player.x+player.size/2));
 }
@@ -946,10 +1119,17 @@ function explodeEnemyBullet(b){
 // 🎥 CAMERA
 function updateCamera(){
   const w = world();
-  cam.x = (player.x + player.size/2) - 300;
-  cam.y = (player.y + player.size/2) - 225;
-  cam.x = Math.max(0, Math.min(Math.max(0, w.width  - 600), cam.x));
-  cam.y = Math.max(0, Math.min(Math.max(0, w.height - 450), cam.y));
+  const z = getZoom();
+  const vw = VIEW_W() * z, vh = VIEW_H() * z;  // effective world view
+  cam.x = (player.x + player.size/2) - vw/2;
+  cam.y = (player.y + player.size/2) - vh/2;
+  // If world is smaller than viewport, center the world; otherwise clamp to edges
+  if (w.width  <= vw) cam.x = -(vw - w.width)  / 2;
+  else cam.x = Math.max(0, Math.min(w.width  - vw, cam.x));
+  if (w.height <= vh) cam.y = -(vh - w.height) / 2;
+  else cam.y = Math.max(0, Math.min(w.height - vh, cam.y));
+  // Refresh world mouse since zoom or camera may have changed
+  updateWorldMouse();
 }
 
 // ⏪ ENTER LOBBY (between runs and at start)
@@ -990,6 +1170,7 @@ function enterCombat(){
   score = 0;
   savedNewRecord = false;
   bullets = [];
+  levelTimer = 90 * 60;  // 1:30 countdown
   // keep upgrades fresh per run (start clean)
   resetPlayer(300, 300);
   spawnLevel();
@@ -1037,6 +1218,40 @@ function update(){
   if(player.inv > 0) player.inv--;
 
   if(player.hp <= 0){ onDeath(); return; }
+
+  // 🌍 PHYSICS ZONE EFFECTS — fire & nuclear damage ticks
+  {
+    const zone = getPlayerZone();
+    physicsZones.forEach(z=>{ z.tick = (z.tick||0) + 1; });
+    if (zone && (zone.type === "fire" || zone.type === "nuclear")){
+      player.zoneDamageTick = (player.zoneDamageTick||0) + 1;
+      const interval = zone.type === "fire" ? 25 : 35;  // fire hurts faster
+      const dmg      = zone.type === "fire" ? 4  : 3;
+      if (player.zoneDamageTick >= interval){
+        player.zoneDamageTick = 0;
+        player.hp -= dmg;
+        const label = zone.type === "fire" ? "🔥 -"+dmg : "☢ -"+dmg;
+        pushPickup(player.x, player.y, label, zone.type === "fire" ? "#ff6622" : "#66ff44");
+      }
+    } else {
+      player.zoneDamageTick = 0;
+    }
+  }
+
+  // ⏱️ LEVEL TIMER — bomb explodes if time runs out
+  if (levelTimer > 0) levelTimer--;
+  if (levelTimer === 0 && scene === "playing"){
+    // Massive bomb explosion centred on player
+    const bx = player.x + player.size/2, by = player.y + player.size/2;
+    for (let i = 0; i < 6; i++){
+      explosions.push({ x: bx + (Math.random()-0.5)*80, y: by + (Math.random()-0.5)*80,
+                        r: 60 + Math.random()*60, life: 30, max: 30 });
+    }
+    pushPickup(bx, by, "💣 TIME'S UP!", "#ff3333");
+    player.hp = 0;
+    onDeath();
+    return;
+  }
 
   // ⚡ AIRDROPS — animate falling crates and convert them to pickups on landing
   for (let i = airdrops.length - 1; i >= 0; i--) {
@@ -1148,14 +1363,32 @@ function update(){
     return b.x > -20 && b.y > -20 && b.x < dojo.width+20 && b.y < dojo.height+20;
   });
 
-  // bullets vs enemies (with AOE handling)
+  // bullets vs enemies (with AOE, DoT, and minRange handling)
   bullets.forEach(b=>{
     if (b.dead) return;
     for (const e of enemies) {
       if (e.hp <= 0) continue;
       if (hit(b,e)){
-        e.hp -= b.dmg;
-        if (e.hp <= 0) score += 10 * level;
+        // minRange penalty: snipers deal only 15% damage if bullet hasn't traveled far enough
+        let actualDmg = b.dmg;
+        if (b.minRange > 0){
+          const traveled = Math.hypot(b.x - b.startX, b.y - b.startY);
+          if (traveled < b.minRange) actualDmg = Math.max(1, Math.round(b.dmg * 0.15));
+        }
+        e.hp -= actualDmg;
+        // Apply DoT (toxic/flamer) — cap to 4 stacks per enemy
+        if (b.dot && (e.dotEffects||[]).length < 4){
+          e.dotEffects = e.dotEffects || [];
+          e.dotEffects.push({ dmg:b.dot.dmg, ticks:b.dot.ticks, interval:b.dot.interval, timer:b.dot.interval });
+        }
+        const killed = e.hp <= 0;
+        if (killed){
+          const coinReward = Math.floor(5 * Math.pow(1.3, level - 1));
+          coins += coinReward;
+          bests.coins += coinReward;
+          score += 10 * level;
+          pushPickup(e.x, e.y, "+" + coinReward + " 🪙", "#ffd24a");
+        }
         if (b.aoe) { explodeBullet(b); b.dead = true; return; }
         if (b.pierce > 0) {
           b.hits++;
@@ -1221,6 +1454,21 @@ function update(){
   });
   ammoBoxes = ammoBoxes.filter(a=>!a.dead);
 
+  // 🟢 Enemy DoT ticks (toxic/flamer burning)
+  enemies.forEach(e=>{
+    if (!e.dotEffects || e.dotEffects.length === 0) return;
+    for (let i = e.dotEffects.length - 1; i >= 0; i--){
+      const d = e.dotEffects[i];
+      d.timer--;
+      if (d.timer <= 0){
+        e.hp -= d.dmg;
+        d.ticks--;
+        if (d.ticks <= 0) e.dotEffects.splice(i, 1);
+        else d.timer = d.interval;
+      }
+    }
+  });
+
   // dead enemies
   enemies = enemies.filter(e=>e.hp > 0);
 
@@ -1234,6 +1482,12 @@ function update(){
   // next level
   if(enemies.length === 0){
     score += 50 * level;
+    // Exponential coin reward for clearing a level
+    const levelCoins = Math.floor(20 * Math.pow(1.5, level - 1));
+    coins += levelCoins;
+    bests.coins += levelCoins;
+    saveBests();
+    pushPickup(player.x, player.y + 20, "+" + levelCoins + " 🪙 level clear!", "#ffd24a");
     level++;
     commitBests();
     spawnLevel();
@@ -1288,8 +1542,8 @@ function drawNinja(x, y, size, color, aim, opts){
   ctx.fillStyle = color;
   ctx.fillRect(-s*0.30, -s*0.55, s*0.60, s*0.18);
 
-  // 🪖 armor HELMET — colored cap above the head
-  if (opts.armorColor) {
+  // 🪖 armor HELMET — colored cap above the head (from armorColor, only if no helmetColor)
+  if (opts.armorColor && !opts.helmetColor) {
     ctx.fillStyle = opts.armorColor;
     ctx.beginPath();
     ctx.arc(0, -s*0.50, s*0.30, Math.PI, 0);
@@ -1297,9 +1551,24 @@ function drawNinja(x, y, size, color, aim, opts){
     ctx.strokeStyle = opts.armorTrim || "#000";
     ctx.lineWidth = Math.max(1, s*0.04);
     ctx.stroke();
-    // chin strap
     ctx.fillStyle = opts.armorTrim || "#000";
     ctx.fillRect(-s*0.30, -s*0.50, s*0.60, s*0.04);
+  }
+
+  // 🪖 purchased HELMET (from HELMET_SHOP) — drawn over the head with visor
+  if (opts.helmetColor) {
+    ctx.fillStyle = opts.helmetColor;
+    ctx.beginPath();
+    ctx.arc(0, -s*0.48, s*0.33, Math.PI, 0);
+    ctx.fill();
+    // visor strip
+    ctx.fillStyle = opts.helmetTrim || "rgba(0,0,0,0.7)";
+    ctx.fillRect(-s*0.30, -s*0.53, s*0.60, s*0.12);
+    ctx.strokeStyle = opts.helmetTrim || "#000";
+    ctx.lineWidth = Math.max(1, s*0.05);
+    ctx.beginPath();
+    ctx.arc(0, -s*0.48, s*0.33, Math.PI, 0);
+    ctx.stroke();
   }
 
   // eyes
@@ -1638,10 +1907,15 @@ function drawBullet(b){
   }
 }
 
-// 🎒 INVENTORY BAR (bottom of canvas)
-const INV_BAR = { x: 600/2 - (5*52 + 4*6)/2, y: 400, slotW: 52, slotH: 40, gap: 6 };
+// 🎒 INVENTORY BAR (bottom of canvas) — positioned dynamically each frame
+const INV_BAR = { x: 0, y: 0, slotW: 52, slotH: 40, gap: 6 };
+function updateInvBarPos(){
+  INV_BAR.x = VIEW_W()/2 - (5*INV_BAR.slotW + 4*INV_BAR.gap)/2;
+  INV_BAR.y = VIEW_H() - 60;
+}
 
 function slotAtScreen(mx, my){
+  updateInvBarPos();
   if (my < INV_BAR.y - 4 || my > INV_BAR.y + INV_BAR.slotH + 4) return -1;
   for (let i=0;i<MAX_INVENTORY;i++){
     const x = INV_BAR.x + i*(INV_BAR.slotW + INV_BAR.gap);
@@ -1716,12 +1990,14 @@ function drawInventoryBar(){
 
 // 🎨 DRAW
 function draw(){
-  ctx.clearRect(0,0,600,450);
+  updateInvBarPos();
+  ctx.clearRect(0,0,VIEW_W(),VIEW_H());
 
   if (scene === "lobby") {
     drawLobby();
   } else {
     drawCombat();
+    drawAirdropPointer();      // off-screen yellow arrow toward active airdrop
     if (mapOpen) drawMinimap();
     else         drawMapHint();
   }
@@ -1732,29 +2008,89 @@ function draw(){
 
 // Tiny corner hint reminding the player how to open the map.
 function drawMapHint(){
+  const vw = VIEW_W();
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(600 - 92, 6, 86, 18);
+  ctx.fillRect(vw - 92, 6, 86, 18);
   ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(600 - 92 + 0.5, 6.5, 85, 17);
+  ctx.strokeRect(vw - 92 + 0.5, 6.5, 85, 17);
   ctx.fillStyle = "#ffd24a";
   ctx.font = "bold 11px Arial";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText("🗺️ M  Map", 600 - 86, 16);
+  ctx.fillText("🗺️ M  Map", vw - 86, 16);
+}
+
+// ⚡ AIRDROP POINTER — yellow arrow on screen edge pointing toward an active
+// airdrop crate (falling or landed). Hidden when the airdrop is on-screen.
+function drawAirdropPointer(){
+  if (!airdrops.length) return;
+  const vw = VIEW_W(), vh = VIEW_H();
+  const cx = vw / 2, cy = vh / 2;
+  const z = getZoom();
+  for (const a of airdrops){
+    const wx = a.x, wy = a.y;
+    // Project world to screen accounting for current zoom
+    const sx = (wx - cam.x) / z, sy = (wy - cam.y) / z;
+    // If on-screen, draw a soft pulsing halo around it instead of an arrow
+    if (sx >= 0 && sx <= vw && sy >= 0 && sy <= vh){
+      const pulse = 1 + 0.35 * Math.sin(Date.now()/180);
+      ctx.strokeStyle = "rgba(255,210,74,0.85)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 28 * pulse, 0, Math.PI*2);
+      ctx.stroke();
+      continue;
+    }
+    // Off-screen: draw arrow on the edge pointing toward it
+    const dx = sx - cx, dy = sy - cy;
+    const ang = Math.atan2(dy, dx);
+    const margin = 36;
+    const halfW = cx - margin, halfH = cy - margin;
+    // Project onto the edge rectangle
+    const t = Math.min(halfW / Math.abs(dx || 1), halfH / Math.abs(dy || 1));
+    const ex = cx + dx * t, ey = cy + dy * t;
+    // Distance label (in tiles ~ 32px each)
+    const dist = Math.round(Math.hypot(wx - (player.x + player.size/2), wy - (player.y + player.size/2)) / 32);
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(ang);
+    // arrow body
+    ctx.fillStyle = "rgba(255,210,74,0.95)";
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-10, -10);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-10, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+    // distance label next to arrow
+    ctx.fillStyle = "#ffd24a";
+    ctx.font = "bold 12px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const lx = ex - Math.cos(ang) * 26;
+    const ly = ey - Math.sin(ang) * 26;
+    ctx.fillText("⚡ " + dist + "m", lx, ly);
+  }
 }
 
 // 🗺️ MINIMAP — large centered overlay opened/closed with M.
 function drawMinimap(){
   // size: as big as fits in the canvas with some padding
+  const vw = VIEW_W(), vh = VIEW_H();
   const pad = 24;
-  const maxW = 600 - pad*2;
-  const maxH = 450 - pad*2;
+  const maxW = vw - pad*2;
+  const maxH = vh - pad*2;
   const ratio = dojo.width / dojo.height;
   let mw = maxW, mh = mw / ratio;
   if (mh > maxH) { mh = maxH; mw = mh * ratio; }
-  const mx = (600 - mw) / 2;
-  const my = (450 - mh) / 2;
+  const mx = (vw - mw) / 2;
+  const my = (vh - mh) / 2;
   const sx = mw / dojo.width;   // world → minimap scale X
   const sy = mh / dojo.height;  // world → minimap scale Y
 
@@ -1767,13 +2103,13 @@ function drawMinimap(){
   ctx.strokeRect(mx + 0.5, my + 0.5, mw - 1, mh - 1);
 
   // current camera viewport rectangle
-  const vx = mx + cam.x * sx;
-  const vy = my + cam.y * sy;
-  const vw = 600 * sx;
-  const vh = 450 * sy;
+  const vrx = mx + cam.x * sx;
+  const vry = my + cam.y * sy;
+  const vrw = VIEW_W() * sx;
+  const vrh = VIEW_H() * sy;
   ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(vx, vy, vw, vh);
+  ctx.strokeRect(vrx, vry, vrw, vrh);
 
   // buildings (apartments) — dark filled rects
   ctx.fillStyle = "#3a3f48";
@@ -1904,20 +2240,131 @@ function drawCrosshair(){
   ctx.fill();
 }
 
+// 🌍 PHYSICS ZONES RENDERER
+const ZONE_STYLE = {
+  water:   { base:"rgba(30,120,255,0.30)",  border:"rgba(80,160,255,0.7)",  label:"💧 WATER",   labelCol:"#88ccff" },
+  ice:     { base:"rgba(200,240,255,0.28)", border:"rgba(180,230,255,0.75)",label:"❄ ICE",      labelCol:"#ccf0ff" },
+  fire:    { base:"rgba(255,80,0,0.28)",    border:"rgba(255,160,30,0.80)", label:"🔥 FIRE",    labelCol:"#ff9944" },
+  forest:  { base:"rgba(30,110,30,0.32)",   border:"rgba(60,160,60,0.70)",  label:"🌲 FOREST",  labelCol:"#88dd88" },
+  nuclear: { base:"rgba(80,255,60,0.22)",   border:"rgba(120,255,80,0.75)", label:"☢ NUCLEAR",  labelCol:"#99ff44" }
+};
+function drawPhysicsZones(){
+  const t = Date.now();
+  for (const z of physicsZones){
+    const sx = z.x - cam.x, sy = z.y - cam.y;
+    const st = ZONE_STYLE[z.type] || ZONE_STYLE.water;
+    // animated fill — different patterns per type
+    if (z.type === "water"){
+      // rippling water using sine-shifted fill rows
+      ctx.fillStyle = st.base;
+      ctx.fillRect(sx, sy, z.w, z.h);
+      ctx.strokeStyle = "rgba(120,200,255,0.25)";
+      ctx.lineWidth = 1.5;
+      for (let wy=0; wy < z.h; wy += 18){
+        const waveOff = Math.sin((t/600) + wy*0.2) * 6;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy+wy+waveOff);
+        for (let wx=0; wx<=z.w; wx+=12){
+          ctx.lineTo(sx+wx, sy+wy + Math.sin((t/500)+wx*0.25)*5 + waveOff);
+        }
+        ctx.stroke();
+      }
+    } else if (z.type === "ice"){
+      ctx.fillStyle = st.base;
+      ctx.fillRect(sx, sy, z.w, z.h);
+      // crystalline shimmer lines
+      ctx.strokeStyle = "rgba(220,245,255,0.35)";
+      ctx.lineWidth = 1;
+      for (let i=0; i<8; i++){
+        const angle = (i/8)*Math.PI + (t/4000);
+        const mx = sx + z.w/2 + Math.cos(angle)*z.w*0.4;
+        const my = sy + z.h/2 + Math.sin(angle)*z.h*0.4;
+        ctx.beginPath();
+        ctx.moveTo(sx+z.w/2, sy+z.h/2);
+        ctx.lineTo(mx, my);
+        ctx.stroke();
+      }
+    } else if (z.type === "fire"){
+      // flickering flame fill
+      const flicker = 0.25 + 0.07*Math.sin(t/80);
+      ctx.fillStyle = `rgba(255,80,0,${flicker})`;
+      ctx.fillRect(sx, sy, z.w, z.h);
+      // fire columns
+      for (let fx=0; fx<z.w; fx+=22){
+        const ht = 14 + 12*Math.sin((t/160) + fx*0.3);
+        const grad = ctx.createLinearGradient(sx+fx, sy+z.h, sx+fx, sy+z.h-ht);
+        grad.addColorStop(0,"rgba(255,60,0,0.8)");
+        grad.addColorStop(0.5,"rgba(255,150,20,0.5)");
+        grad.addColorStop(1,"rgba(255,220,60,0.0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(sx+fx, sy+z.h-ht/2, 8+4*Math.random(), ht/2, 0, 0, Math.PI*2);
+        ctx.fill();
+      }
+    } else if (z.type === "forest"){
+      ctx.fillStyle = st.base;
+      ctx.fillRect(sx, sy, z.w, z.h);
+      // scattered tree dots
+      const seed = (z.x * 31 + z.y * 17) | 0;
+      for (let i=0; i<12; i++){
+        const tx = sx + ((seed*31+i*73)%100)/100 * z.w;
+        const ty = sy + ((seed*17+i*43)%100)/100 * z.h;
+        const tr = 9 + ((seed+i)%6);
+        ctx.fillStyle = "#1a5e20";
+        ctx.beginPath(); ctx.arc(tx, ty, tr, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#2d8a35";
+        ctx.beginPath(); ctx.arc(tx-tr*0.3, ty-tr*0.3, tr*0.65, 0, Math.PI*2); ctx.fill();
+      }
+    } else if (z.type === "nuclear"){
+      // glowing toxic green
+      const pulse = 0.18 + 0.08*Math.sin(t/300);
+      ctx.fillStyle = `rgba(80,255,60,${pulse})`;
+      ctx.fillRect(sx, sy, z.w, z.h);
+      // bubbling waste circles
+      for (let i=0; i<6; i++){
+        const bx = sx + (((z.x+i*77)%100)/100)*z.w;
+        const by = sy + (((z.y+i*53)%100)/100)*z.h;
+        const br = 10 + 6*Math.sin(t/400 + i);
+        ctx.fillStyle = "rgba(120,255,70,0.35)";
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI*2); ctx.fill();
+      }
+      // hazard symbol hint
+      ctx.font = "22px Arial";
+      ctx.textAlign = "center";
+      ctx.globalAlpha = 0.3 + 0.1*Math.sin(t/500);
+      ctx.fillStyle = "#aaff44";
+      ctx.fillText("☢", sx+z.w/2, sy+z.h/2+8);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "start";
+    }
+    // border
+    ctx.strokeStyle = st.border;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx+1, sy+1, z.w-2, z.h-2);
+    // label in corner
+    ctx.font = "bold 11px Arial";
+    ctx.fillStyle = st.labelCol;
+    ctx.textAlign = "left";
+    ctx.fillText(st.label, sx+6, sy+15);
+  }
+}
+
 function drawWorldBg(w, h, tile){
-  // simple ground grid for spatial reference
+  // simple ground grid for spatial reference (extends to cover zoomed-out view)
+  const z = getZoom();
+  const _vw = VIEW_W() * z, _vh = VIEW_H() * z;
   ctx.fillStyle = "#1a1d22";
-  ctx.fillRect(0,0,600,450);
+  ctx.fillRect(0,0,_vw,_vh);
   ctx.strokeStyle = "rgba(255,255,255,0.05)";
   ctx.lineWidth = 1;
   const step = 60;
   const offX = -((cam.x) % step);
   const offY = -((cam.y) % step);
-  for (let x = offX; x < 600; x += step) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 450); ctx.stroke();
+  for (let x = offX; x < _vw; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, _vh); ctx.stroke();
   }
-  for (let y = offY; y < 450; y += step) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(600, y); ctx.stroke();
+  for (let y = offY; y < _vh; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(_vw, y); ctx.stroke();
   }
   // world border
   ctx.strokeStyle = "rgba(255,255,255,0.15)";
@@ -2130,7 +2577,7 @@ function drawLobby(){
     ctx.fillStyle = "#ffd24a";
     ctx.font = "bold 11px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("[E] Armor Shop", sx, sy - 6);
+    ctx.fillText("[E] Equipment Shop", sx, sy - 6);
   }
 
   ctx.textAlign = "start";
@@ -2162,103 +2609,123 @@ function drawShopBuilding(){
   ctx.fillStyle = "#ffd24a";
   ctx.font = "bold 12px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("🛡️ ARMOR", sx + shop.w/2, sy - 14);
+  ctx.fillText("🛡 SHOP", sx + shop.w/2, sy - 14);
   ctx.fillStyle = "#bbb";
   ctx.font = "10px Arial";
   ctx.fillText("walk up & press E", sx + shop.w/2, sy + shop.h + 14);
   ctx.textAlign = "start";
 }
 
-// 🛍️ Full-canvas armor shop overlay
+// Helper: draw one shop row (used by all three tabs)
+function drawShopRow(r, swatchColor, swatchTrim, nameText, statText, statusText, statusColor, isEquipped, isAffordable){
+  ctx.fillStyle = isEquipped ? "rgba(255,210,74,0.18)"
+                : isAffordable ? "rgba(255,255,255,0.05)"
+                               : "rgba(255,80,80,0.05)";
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  if (isEquipped){ ctx.strokeStyle="#ffd24a"; ctx.lineWidth=1; ctx.strokeRect(r.x+0.5,r.y+0.5,r.w-1,r.h-1); }
+  if (swatchColor){
+    ctx.fillStyle = swatchColor;
+    ctx.fillRect(r.x+6, r.y+4, 16, 16);
+    if (swatchTrim){ ctx.strokeStyle=swatchTrim; ctx.lineWidth=2; ctx.strokeRect(r.x+6.5,r.y+4.5,15,15); }
+  } else {
+    ctx.fillStyle="#444"; ctx.fillRect(r.x+6,r.y+4,16,16);
+  }
+  ctx.textAlign="left";  ctx.fillStyle=isAffordable?"#fff":"#777"; ctx.font="bold 12px Arial"; ctx.fillText(nameText, r.x+30, r.y+16);
+  ctx.textAlign="right"; ctx.fillStyle=isAffordable?"#7ad3ff":"#666"; ctx.font="12px Arial"; ctx.fillText(statText, r.x+r.w-110, r.y+16);
+  ctx.fillStyle=statusColor; ctx.font="bold 11px Arial"; ctx.fillText(statusText, r.x+r.w-6, r.y+16);
+}
+
+// 🛍️ Tabbed equipment shop overlay
 function drawShopOverlay(){
-  // dim background
-  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillStyle = "rgba(0,0,0,0.75)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const p = shopPanelRect();
-  // panel
   ctx.fillStyle = "#1a1d22";
   ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.strokeStyle = "#ffd24a";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
-  // title
-  ctx.fillStyle = "#ffd24a";
-  ctx.font = "bold 18px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("🛡️  ARMOR SHOP", p.x + 16, p.y + 28);
-  ctx.fillStyle = "#aaa";
-  ctx.font = "11px Arial";
-  ctx.fillText("Best Level " + bests.bestLevel + " — unlock a new tier every 10 levels.",
-               p.x + 16, p.y + 46);
-  // close X
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 16px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("✕", p.x + p.w - 18, p.y + 22);
+  ctx.strokeStyle = "#ffd24a"; ctx.lineWidth = 2;
+  ctx.strokeRect(p.x+0.5, p.y+0.5, p.w-1, p.h-1);
 
-  // rows
-  ctx.font = "12px Arial";
-  for (let i = 0; i < ARMOR_SETS.length; i++) {
-    const s = ARMOR_SETS[i];
-    const r = shopRowRect(i);
-    const unlocked = bests.bestLevel >= s.unlock;
-    const equipped = bests.armorTier === i;
+  // title + coin balance
+  ctx.fillStyle = "#ffd24a"; ctx.font = "bold 18px Arial"; ctx.textAlign = "left";
+  ctx.fillText("🛡 EQUIPMENT SHOP", p.x+16, p.y+28);
+  ctx.fillStyle = "#ffd24a"; ctx.font = "bold 14px Arial"; ctx.textAlign = "right";
+  ctx.fillText("🪙 " + bests.coins.toLocaleString() + " coins", p.x+p.w-16, p.y+28);
+  ctx.fillStyle = "#fff"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
+  ctx.fillText("✕", p.x+p.w-18, p.y+22);
 
-    // row background
-    ctx.fillStyle = equipped ? "rgba(255,210,74,0.18)"
-                  : unlocked ? "rgba(255,255,255,0.05)"
-                             : "rgba(255,80,80,0.05)";
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    if (equipped) {
-      ctx.strokeStyle = "#ffd24a";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-    }
-
-    // armor swatch
-    if (s.color) {
-      ctx.fillStyle = s.color;
-      ctx.fillRect(r.x + 6, r.y + 4, 16, 16);
-      ctx.strokeStyle = s.trim || "#000";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(r.x + 6.5, r.y + 4.5, 15, 15);
-    } else {
-      ctx.fillStyle = "#444";
-      ctx.fillRect(r.x + 6, r.y + 4, 16, 16);
-    }
-
-    // name
-    ctx.textAlign = "left";
-    ctx.fillStyle = unlocked ? "#fff" : "#777";
-    ctx.font = "bold 12px Arial";
-    ctx.fillText("Tier " + s.tier + " — " + s.name, r.x + 30, r.y + 16);
-
-    // damage reduction
-    ctx.textAlign = "right";
-    ctx.font = "12px Arial";
-    ctx.fillStyle = unlocked ? "#7ad3ff" : "#666";
-    ctx.fillText(Math.round(s.dr * 100) + "% DR", r.x + r.w - 110, r.y + 16);
-
-    // status
-    let status, color;
-    if (equipped)      { status = "EQUIPPED"; color = "#ffd24a"; }
-    else if (unlocked) { status = "click to equip"; color = "#9ae27a"; }
-    else               { status = "Lv " + s.unlock + " to unlock"; color = "#ff8888"; }
-    ctx.fillStyle = color;
-    ctx.font = "bold 11px Arial";
-    ctx.fillText(status, r.x + r.w - 6, r.y + 16);
+  // tabs
+  const tabs = ["armor","helmet","boots"];
+  const tabLabels = ["🛡 ARMOR","🪖 HELMET","👟 BOOTS"];
+  for (let ti=0; ti<tabs.length; ti++){
+    const tr = shopTabRect(ti);
+    const active = shopTab === tabs[ti];
+    ctx.fillStyle = active ? "#ffd24a" : "#2a2d35";
+    ctx.fillRect(tr.x, tr.y, tr.w, tr.h);
+    ctx.strokeStyle = active ? "#ffd24a" : "#555"; ctx.lineWidth=1;
+    ctx.strokeRect(tr.x+0.5, tr.y+0.5, tr.w-1, tr.h-1);
+    ctx.fillStyle = active ? "#000" : "#aaa"; ctx.font="bold 12px Arial"; ctx.textAlign="center";
+    ctx.fillText(tabLabels[ti], tr.x+tr.w/2, tr.y+17);
   }
 
-  // footer hint
-  ctx.fillStyle = "#888";
-  ctx.font = "11px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("Press E or Esc to close", p.x + p.w/2, p.y + p.h - 10);
+  // sub-header
+  ctx.font = "11px Arial"; ctx.fillStyle = "#aaa"; ctx.textAlign = "left";
+  if (shopTab==="armor")  ctx.fillText("Level-locked suits. Best Level: "+bests.bestLevel, p.x+16, p.y+88);
+  if (shopTab==="helmet") ctx.fillText("Buy once with coins. Reduces incoming damage.", p.x+16, p.y+88);
+  if (shopTab==="boots")  ctx.fillText("Buy once with coins. Increases movement speed.", p.x+16, p.y+88);
+
+  // rows
+  if (shopTab === "armor"){
+    for (let i=0; i<ARMOR_SETS.length; i++){
+      const s = ARMOR_SETS[i];
+      const unlocked = bests.bestLevel >= s.unlock;
+      const equipped  = bests.armorTier === i;
+      const stat  = Math.round(s.dr*100)+"% DR";
+      const status = equipped ? "EQUIPPED" : unlocked ? "click to equip" : "Lv "+s.unlock;
+      const col   = equipped ? "#ffd24a" : unlocked ? "#9ae27a" : "#ff8888";
+      drawShopRow(shopRowRect(i), s.color, s.trim, "T"+s.tier+" — "+s.name, stat, status, col, equipped, unlocked);
+    }
+  } else if (shopTab === "helmet"){
+    for (let i=0; i<HELMET_SHOP.length; i++){
+      const h = HELMET_SHOP[i];
+      const owned   = bests.helmetTier >= i;
+      const equipped = bests.helmetTier === i;
+      const canBuy  = i===0 || (bests.coins >= h.price && !owned);
+      const stat  = Math.round(h.dr*100)+"% DR";
+      let status, col;
+      if (equipped)         { status="EQUIPPED";       col="#ffd24a"; }
+      else if (owned)        { status="click to equip"; col="#9ae27a"; }
+      else if (bests.coins>=h.price){ status="Buy 🪙 "+h.price.toLocaleString(); col="#88ffaa"; }
+      else                   { status="Need 🪙 "+h.price.toLocaleString(); col="#ff8888"; }
+      drawShopRow(shopRowRect(i), h.color, h.trim, h.name, stat, status, col, equipped, owned||(bests.coins>=h.price));
+    }
+  } else if (shopTab === "boots"){
+    for (let i=0; i<BOOTS_SHOP.length; i++){
+      const b = BOOTS_SHOP[i];
+      const owned   = bests.bootsTier >= i;
+      const equipped = bests.bootsTier === i;
+      const stat  = "+"+Math.round(b.bonus*100/1.2)+"%spd";
+      let status, col;
+      if (equipped)         { status="EQUIPPED";       col="#ffd24a"; }
+      else if (owned)        { status="click to equip"; col="#9ae27a"; }
+      else if (bests.coins>=b.price){ status="Buy 🪙 "+b.price.toLocaleString(); col="#88ffaa"; }
+      else                   { status="Need 🪙 "+b.price.toLocaleString(); col="#ff8888"; }
+      drawShopRow(shopRowRect(i), b.color, null, b.name, stat, status, col, equipped, owned||(bests.coins>=b.price));
+    }
+  }
+
+  ctx.fillStyle = "#888"; ctx.font = "11px Arial"; ctx.textAlign = "center";
+  ctx.fillText("Press E or Esc to close", p.x+p.w/2, p.y+p.h-10);
   ctx.textAlign = "left";
 }
 
 function drawCombat(){
+  // Apply sniper zoom-out: render world at 1/zoom scale so you see more
+  const _z = getZoom();
+  ctx.save();
+  if (_z !== 1) ctx.scale(1/_z, 1/_z);
   drawWorldBg(dojo.width, dojo.height);
+  // Physics zones drawn right on the ground, under everything
+  drawPhysicsZones();
 
   // 🌿 bushes (under everything else, on the ground)
   bushes.forEach(b=>drawBush(b));
@@ -2385,6 +2852,24 @@ function drawCombat(){
 
   // enemies (red ninjas, hold their own gun, with HP bar above)
   enemies.forEach(e=>{
+    // 🟢🟠 DoT aura — glow when enemy is burning or poisoned
+    if (e.dotEffects && e.dotEffects.length > 0){
+      const hasFire  = e.dotEffects.some(d=>d.interval===30);
+      const hasToxic = e.dotEffects.some(d=>d.interval===38);
+      const auraColor = hasFire ? "rgba(255,110,20,0.45)" : "rgba(100,255,30,0.42)";
+      const auraR = e.size * 0.75 + 4 * Math.sin(Date.now() / 120);
+      const ex = e.x - cam.x + e.size/2, ey = e.y - cam.y + e.size/2;
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      const grad = ctx.createRadialGradient(ex, ey, 0, ex, ey, auraR);
+      grad.addColorStop(0, auraColor);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(ex, ey, auraR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     drawNinja(e.x, e.y, e.size, "#c0392b", e.aim || 0,
               { belt:"#7a1d12", gunKind: e.gun || "pistol" });
     // HP bar
@@ -2434,9 +2919,11 @@ function drawCombat(){
   if (!(player.inv > 0 && (player.inv % 8 < 4))) {
     const ag = activeEntry();
     const ar = currentArmor();
+    const hl = currentHelmet();
     drawNinja(player.x, player.y, player.size, "#3a6dd9", player.aim,
               { belt:"#1f3d80", gunKind: ag ? ag.gun : null,
-                armorColor: ar.color, armorTrim: ar.trim });
+                armorColor: ar.color, armorTrim: ar.trim,
+                helmetColor: hl.color, helmetTrim: hl.trim });
   }
 
   // floating pickup text
@@ -2448,30 +2935,121 @@ function drawCombat(){
   });
   ctx.textAlign = "start";
 
+  // End of zoomed world rendering — restore for HUD
+  ctx.restore();
+
+  // 🌍 ZONE INDICATOR — bottom-left badge when player is standing in a zone
+  if (scene === "playing"){
+    const zone = getPlayerZone();
+    if (zone){
+      const st = ZONE_STYLE[zone.type];
+      const vw = VIEW_W(), vh = VIEW_H();
+      const pillW = 130, pillH = 26, pillX = 10, pillY = vh - 72;
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.beginPath(); ctx.roundRect(pillX, pillY, pillW, pillH, 7); ctx.fill();
+      ctx.font = "bold 13px Arial";
+      ctx.fillStyle = st.labelCol;
+      ctx.textAlign = "center";
+      // zone-specific effect description
+      const desc = {
+        water:"WATER · slow ×0.5",
+        ice:"ICE · slide!",
+        fire:"FIRE · losing HP!",
+        forest:"FOREST · slow ×0.65",
+        nuclear:"NUCLEAR · losing HP!"
+      }[zone.type] || zone.type;
+      ctx.fillText(st.label + "  " + (desc.split("·")[1]||"").trim(), pillX+pillW/2, pillY+18);
+      ctx.textAlign = "start";
+      // flashing red border on damage zones
+      if (zone.type === "fire" || zone.type === "nuclear"){
+        const flash = Math.sin(Date.now()/150) > 0;
+        if (flash){
+          ctx.strokeStyle = zone.type === "fire" ? "#ff4400" : "#44ff22";
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.roundRect(pillX, pillY, pillW, pillH, 7); ctx.stroke();
+        }
+        // screen edge vignette tint
+        const vcol = zone.type === "fire" ? "rgba(255,40,0,0.12)" : "rgba(80,255,40,0.10)";
+        ctx.fillStyle = vcol;
+        ctx.fillRect(0, 0, vw, vh);
+      }
+    }
+  }
+
+  // ⏱️ LEVEL TIMER HUD — top-center countdown clock
+  if (scene === "playing" && levelTimer >= 0){
+    const totalSec = Math.ceil(levelTimer / 60);
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    const timeStr = mins + ":" + String(secs).padStart(2,"0");
+    const vw = VIEW_W();
+    const danger = levelTimer <= 20 * 60;   // last 20 seconds
+    const urgent = levelTimer <= 10 * 60;   // last 10 seconds
+    // Pulsing red flash in last 10 seconds
+    const flash = urgent ? (Math.sin(Date.now() / 120) > 0) : false;
+    // Background pill
+    const pillW = 90, pillH = 32, pillX = vw/2 - pillW/2, pillY = 8;
+    ctx.fillStyle = urgent
+      ? (flash ? "rgba(200,0,0,0.85)" : "rgba(120,0,0,0.85)")
+      : danger
+        ? "rgba(180,60,0,0.75)"
+        : "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    ctx.roundRect(pillX, pillY, pillW, pillH, 8);
+    ctx.fill();
+    // Clock icon
+    ctx.font = "14px Arial";
+    ctx.fillStyle = danger ? "#ff8844" : "#ccc";
+    ctx.textAlign = "center";
+    ctx.fillText("⏱", vw/2 - 22, pillY + 21);
+    // Time text
+    ctx.font = "bold 16px monospace";
+    ctx.fillStyle = urgent ? (flash ? "#fff" : "#ff4444") : danger ? "#ffaa44" : "#ffffff";
+    ctx.fillText(timeStr, vw/2 + 12, pillY + 22);
+    ctx.textAlign = "start";
+    // "HURRY!" warning banner in last 20 seconds
+    if (danger && !urgent){
+      ctx.font = "bold 13px Arial";
+      ctx.fillStyle = "rgba(255,140,0,0.9)";
+      ctx.textAlign = "center";
+      ctx.fillText("⚠ HURRY!", vw/2, pillY + 52);
+      ctx.textAlign = "start";
+    }
+    if (urgent){
+      ctx.font = "bold 15px Arial";
+      ctx.fillStyle = flash ? "#ff2222" : "#ff8844";
+      ctx.textAlign = "center";
+      ctx.fillText("💣 BOMB INCOMING!", vw/2, pillY + 52);
+      ctx.textAlign = "start";
+    }
+  }
+
   // mini upgrade strip + inventory bar
   drawUpgradeStrip();
   drawInventoryBar();
 
   // GAME OVER overlay
   if(scene === "gameover"){
+    const vw = VIEW_W(), vh = VIEW_H();
+    const cx = vw/2, cy = vh/2;
     ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(0,0,600,450);
+    ctx.fillRect(0,0,vw,vh);
     ctx.fillStyle = "white";
     ctx.textAlign = "center";
     ctx.font = "44px Arial";
-    ctx.fillText("YOU FELL", 300, 190);
+    ctx.fillText("YOU FELL", cx, cy - 35);
     ctx.font = "18px Arial";
-    ctx.fillText("Level reached: " + level + "   Score: " + score, 300, 230);
+    ctx.fillText("Level reached: " + level + "   Score: " + score, cx, cy + 5);
     ctx.fillStyle = "#ffd24a";
-    ctx.fillText("Best Level: " + bests.bestLevel + "   High Score: " + bests.bestScore, 300, 256);
+    ctx.fillText("Best Level: " + bests.bestLevel + "   High Score: " + bests.bestScore, cx, cy + 31);
     if (savedNewRecord) {
       ctx.fillStyle = "#7CFC00";
       ctx.font = "20px Arial";
-      ctx.fillText("New Record!", 300, 290);
+      ctx.fillText("New Record!", cx, cy + 65);
     }
     ctx.fillStyle = "#bbb";
     ctx.font = "13px Arial";
-    ctx.fillText("Returning to lobby...", 300, 320);
+    ctx.fillText("Returning to lobby...", cx, cy + 95);
     ctx.textAlign = "start";
   }
 }
@@ -2497,9 +3075,16 @@ function drawUpgradeStrip(){
     x += 38;
   });
 
+  // 🪙 Coin counter (below stats strip)
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(8, 32, 120, 20);
+  ctx.fillStyle = "#ffd24a";
+  ctx.font = "bold 12px Arial";
+  ctx.fillText("🪙 " + bests.coins.toLocaleString(), 14, 47);
+
   // HP bar (top right of canvas)
   const barW = 160, barH = 12;
-  const bx = 600 - barW - 12, by = 12;
+  const bx = VIEW_W() - barW - 12, by = 12;
   ctx.fillStyle = "rgba(0,0,0,0.5)";
   ctx.fillRect(bx-2, by-2, barW+4, barH+4);
   ctx.fillStyle = "#3a3a3a";
